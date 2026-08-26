@@ -62,6 +62,20 @@ func (rp *RepoPicker) HandleKeyPress(msg tea.KeyMsg) bool {
 		}
 		return true
 	}
+	// 1-9 by position, or the first letter of the repo's LAST path segment.
+	// Repeating a letter cycles through repos that share it -- two of ours are
+	// NextActionGuide and NextActionGuide-Tools.
+	//
+	// ⚠ j and k are handled ABOVE and keep priority: they are established vim
+	// bindings people rely on. A repository whose name starts with j or k is
+	// therefore reachable by NUMBER and by arrow, but not by its letter. That is
+	// a real limitation and it is said here rather than discovered.
+	if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 {
+		if i := PickByRune(rp.repos, msg.Runes[0], rp.cursor); i >= 0 {
+			rp.cursor = i
+			return true
+		}
+	}
 	return false
 }
 

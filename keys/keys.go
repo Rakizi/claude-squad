@@ -93,11 +93,16 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	),
 	KeyPickRepo: key.NewBinding(
 		key.WithKeys("up", "down"),
-		key.WithHelp("↑/↓", "choose repo"),
+		key.WithHelp("↑/↓ or 1-9/letter", "choose repo"),
 	),
+	// ⛔ CORRECTED 2026-08-26: this said ↑/↓, which the profile picker does not
+	// handle at all -- it reads ←/→. The menu bar and the picker disagreed, and
+	// the menu bar was wrong. A key hint naming a key that does nothing is worse
+	// than no hint: the reader presses it, nothing happens, and they conclude the
+	// picker is broken.
 	KeyPickProfile: key.NewBinding(
-		key.WithKeys("up", "down"),
-		key.WithHelp("↑/↓", "choose profile"),
+		key.WithKeys("left", "right"),
+		key.WithHelp("←/→ or 1-9/letter", "choose profile"),
 	),
 	KeyPickCreate: key.NewBinding(
 		key.WithKeys("enter"),

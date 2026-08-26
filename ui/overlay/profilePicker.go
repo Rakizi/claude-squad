@@ -53,6 +53,22 @@ func (pp *ProfilePicker) HandleKeyPress(msg tea.KeyMsg) bool {
 			pp.cursor++
 		}
 		return true
+	case tea.KeyRunes:
+		// 1-9 by position, or the first letter of the profile name. Stepping is
+		// where a driver goes wrong; a direct key has no intermediate state to
+		// misread. Unmatched keys are NOT consumed, so enter and esc still work.
+		if len(msg.Runes) != 1 {
+			return false
+		}
+		names := make([]string, len(pp.profiles))
+		for i, prof := range pp.profiles {
+			names[i] = prof.Name
+		}
+		if i := PickByRune(names, msg.Runes[0], pp.cursor); i >= 0 {
+			pp.cursor = i
+			return true
+		}
+		return false
 	}
 	return false
 }

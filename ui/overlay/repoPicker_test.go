@@ -58,6 +58,36 @@ func TestRepoPicker(t *testing.T) {
 		assert.Equal(t, "/lab/alpha", rp.GetSelectedRepo())
 	})
 
+	t.Run("a digit jumps straight to that position", func(t *testing.T) {
+		rp := NewRepoPicker(three)
+
+		assert.True(t, rp.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'3'}}))
+		assert.Equal(t, "/other/gamma", rp.GetSelectedRepo(), "no stepping, no intermediate state")
+	})
+
+	t.Run("a letter jumps by the LAST path segment, not the first char", func(t *testing.T) {
+		// ⛔ Every real repo label starts "the-lab/". Matching the first
+		// character would make them all answer to one key.
+		rp := NewRepoPicker([]string{"/lab/alpha", "/lab/beta", "/other/gamma"})
+
+		assert.True(t, rp.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}}))
+		assert.Equal(t, "/other/gamma", rp.GetSelectedRepo())
+	})
+
+	t.Run("⚠ j and k stay VIM KEYS, not shortcuts", func(t *testing.T) {
+		// A repo whose name starts with j or k is reachable by number and arrow
+		// but NOT by its letter, because j/k move the cursor. Pinned so the
+		// trade is visible rather than discovered.
+		rp := NewRepoPicker([]string{"/x/alpha", "/x/jam", "/x/kite"})
+
+		rp.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+		assert.Equal(t, "/x/jam", rp.GetSelectedRepo(), "j moved DOWN one; it did not jump to jam by name")
+
+		rp2 := NewRepoPicker([]string{"/x/alpha", "/x/jam", "/x/kite"})
+		assert.True(t, rp2.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'3'}}))
+		assert.Equal(t, "/x/kite", rp2.GetSelectedRepo(), "but the NUMBER still reaches it")
+	})
+
 	t.Run("unrelated keys are NOT consumed", func(t *testing.T) {
 		rp := NewRepoPicker(three)
 

@@ -65,6 +65,16 @@ var ErrSessionNotFound = errors.New("tmux session no longer exists")
 
 var whiteSpaceRegex = regexp.MustCompile(`\s+`)
 
+// SessionName returns the tmux session name backing an instance with this
+// title.
+//
+// Exported so that callers outside the TUI -- the ls subcommand, scripts, an
+// agent reaching a session directly with tmux send-keys -- can find a session
+// without reimplementing the mangling and drifting from it.
+func SessionName(title string) string {
+	return toClaudeSquadTmuxName(title)
+}
+
 func toClaudeSquadTmuxName(str string) string {
 	str = whiteSpaceRegex.ReplaceAllString(str, "")
 	str = strings.ReplaceAll(str, ".", "_") // tmux replaces all . with _
@@ -496,24 +506,34 @@ func (t *TmuxSession) CapturePaneContentWithOptions(start, end string) (string, 
 }
 
 // CleanupSessions kills all tmux sessions that start with "session-"
-func CleanupSessions(cmdExec cmd.Executor) error {
-	// First try to list sessions
-	cmd := exec.Command("tmux", "ls")
-	output, err := cmdExec.Output(cmd)
-
-	// If there's an error and it's because no server is running, that's fine
-	// Exit code 1 typically means no sessions exist
+// LiveSessions returns the names of every claude-squad tmux session that
+// currently exists.
+//
+// No server running is not an error: it means no sessions, which is a real
+// answer rather than a failure. Callers distinguish "none" from "could not
+// look" by the error, so an empty slice with a nil error means none.
+func LiveSessions(cmdExec cmd.Executor) ([]string, error) {
+	output, err := cmdExec.Output(exec.Command("tmux", "ls"))
 	if err != nil {
+		// Exit code 1 is tmux reporting no server / no sessions.
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			return nil // No sessions to clean up
+			return nil, nil
 		}
-		return fmt.Errorf("failed to list tmux sessions: %v", err)
+		return nil, fmt.Errorf("failed to list tmux sessions: %v", err)
 	}
 
 	re := regexp.MustCompile(fmt.Sprintf(`%s.*:`, TmuxPrefix))
 	matches := re.FindAllString(string(output), -1)
 	for i, match := range matches {
 		matches[i] = match[:strings.Index(match, ":")]
+	}
+	return matches, nil
+}
+
+func CleanupSessions(cmdExec cmd.Executor) error {
+	matches, err := LiveSessions(cmdExec)
+	if err != nil {
+		return err
 	}
 
 	for _, match := range matches {

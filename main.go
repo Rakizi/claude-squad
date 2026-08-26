@@ -159,6 +159,9 @@ func init() {
 		panic(err)
 	}
 
+	lsCmd.Flags().BoolVar(&lsJSON, "json", false, "Output as JSON")
+
+	rootCmd.AddCommand(lsCmd)
 	rootCmd.AddCommand(debugCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(resetCmd)

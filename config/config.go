@@ -44,6 +44,19 @@ type Config struct {
 	BranchPrefix string `json:"branch_prefix"`
 	// Profiles is a list of named program profiles.
 	Profiles []Profile `json:"profiles,omitempty"`
+	// CtrlQPrefix turns ctrl-q into a command prefix while attached to a session
+	// instead of an immediate detach.
+	//
+	// Off by default: ctrl-q detaches exactly as it always has. Turned on:
+	//   ctrl-q d, ctrl-q q   detach
+	//   ctrl-q n             next session
+	//   ctrl-q p             previous session
+	//   ctrl-q <anything>    detach
+	//
+	// A prefix is used rather than new keys because ctrl-q is the only byte this
+	// program already takes; ctrl-n and ctrl-p are readline's history keys inside
+	// the agent, and claiming them would make those unreachable.
+	CtrlQPrefix bool `json:"ctrl_q_prefix,omitempty"`
 	// RepoRoots are directories to scan, one level deep, for git repositories
 	// that a new session may be created in.
 	//

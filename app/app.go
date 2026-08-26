@@ -6,6 +6,7 @@ import (
 	"claude-squad/log"
 	"claude-squad/session"
 	"claude-squad/session/git"
+	"claude-squad/session/tmux"
 	"claude-squad/ui"
 	"claude-squad/ui/overlay"
 	"context"
@@ -863,12 +864,28 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		}
 		// Show help screen before attaching
 		m.showHelpScreen(helpTypeInstanceAttach{}, func() {
-			ch, err := m.list.Attach()
-			if err != nil {
-				m.handleError(err)
-				return
+			// Loop so that ctrl-q n / ctrl-q p move to another session without
+			// returning to the list. Any other ending falls out and lands back
+			// here, which is what a plain ctrl-q has always done.
+			for {
+				ch, err := m.list.AttachWithPrefix(m.appConfig.CtrlQPrefix)
+				if err != nil {
+					m.handleError(err)
+					break
+				}
+				<-ch
+
+				switch m.list.LastAttachCommand() {
+				case tmux.CmdNext:
+					m.list.StepSelection(1)
+				case tmux.CmdPrev:
+					m.list.StepSelection(-1)
+				default:
+					m.state = stateDefault
+					m.instanceChanged()
+					return
+				}
 			}
-			<-ch
 			m.state = stateDefault
 			m.instanceChanged()
 		})

@@ -26,6 +26,14 @@ const ProgramGemini = "gemini"
 
 // TmuxSession represents a managed tmux session
 type TmuxSession struct {
+	// prefixEnabled makes ctrl-q wait for a command key instead of detaching
+	// immediately. Off unless the caller turns it on, so the default behaviour
+	// is byte-for-byte what it was.
+	prefixEnabled bool
+	// lastCommand is what ended the most recent attach: CmdDetach, or the key
+	// pressed after the prefix. Read after the attach channel closes.
+	lastCommand byte
+
 	// Initialized by NewTmuxSession
 	//
 	// The name of the tmux session and the sanitized name used for tmux commands.
@@ -58,6 +66,17 @@ type TmuxSession struct {
 }
 
 const TmuxPrefix = "claudesquad_"
+
+// Commands that may follow the ctrl-q prefix while attached. CmdDetach is also
+// what an unrecognised key produces, so a mistyped command never silently
+// swallows a keystroke -- it does the thing ctrl-q always did.
+const (
+	CmdDetach byte = 0
+	CmdNext   byte = 'n'
+	CmdPrev   byte = 'p'
+)
+
+const ctrlQ = 17
 
 // ErrSessionNotFound is returned when the tmux session backing an instance is gone, which
 // happens whenever the tmux server dies (reboot, crash, `tmux kill-server`).
@@ -276,6 +295,31 @@ func (t *TmuxSession) HasUpdated() (updated bool, hasPrompt bool) {
 	return false, hasPrompt
 }
 
+// SetPrefixEnabled controls whether ctrl-q waits for a command key.
+func (t *TmuxSession) SetPrefixEnabled(v bool) { t.prefixEnabled = v }
+
+// LastCommand reports what ended the most recent attach. Valid once the channel
+// returned by Attach has closed.
+func (t *TmuxSession) LastCommand() byte { return t.lastCommand }
+
+// readCommand reads the key following the ctrl-q prefix.
+//
+// Anything unrecognised -- including a second ctrl-q, d, or q -- is CmdDetach,
+// so a mistype does what ctrl-q has always done rather than being swallowed.
+func (t *TmuxSession) readCommand() byte {
+	buf := make([]byte, 1)
+	n, err := os.Stdin.Read(buf)
+	if err != nil || n != 1 {
+		return CmdDetach
+	}
+	switch buf[0] {
+	case CmdNext, CmdPrev:
+		return buf[0]
+	default:
+		return CmdDetach
+	}
+}
+
 func (t *TmuxSession) Attach() (chan struct{}, error) {
 	t.attachCh = make(chan struct{})
 
@@ -337,9 +381,13 @@ func (t *TmuxSession) Attach() (chan struct{}, error) {
 				continue
 			}
 
-			// Check for Ctrl+q (ASCII 17)
-			if nr == 1 && buf[0] == 17 {
-				// Detach from the session
+			// Ctrl+q. Either an immediate detach, or a prefix waiting for the
+			// command key -- tmux never sees this byte either way.
+			if nr == 1 && buf[0] == ctrlQ {
+				t.lastCommand = CmdDetach
+				if t.prefixEnabled {
+					t.lastCommand = t.readCommand()
+				}
 				t.Detach()
 				return
 			}

@@ -190,6 +190,23 @@ func (i *Instance) RepoName() (string, error) {
 	return i.gitWorktree.GetRepoName(), nil
 }
 
+// SetAttachPrefix controls whether ctrl-q acts as a command prefix while
+// attached. Set before Attach; ignored if the session has not started.
+func (i *Instance) SetAttachPrefix(v bool) {
+	if i.tmuxSession != nil {
+		i.tmuxSession.SetPrefixEnabled(v)
+	}
+}
+
+// LastAttachCommand reports what ended the most recent attach: tmux.CmdDetach,
+// CmdNext or CmdPrev.
+func (i *Instance) LastAttachCommand() byte {
+	if i.tmuxSession == nil {
+		return tmux.CmdDetach
+	}
+	return i.tmuxSession.LastCommand()
+}
+
 func (i *Instance) SetStatus(status Status) {
 	i.Status = status
 }

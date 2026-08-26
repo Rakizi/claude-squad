@@ -124,10 +124,12 @@ func (rp *RepoPicker) Render() string {
 // depends on. Content decides the width; the terminal only decides the ceiling.
 func (rp *RepoPicker) boxWidth() int {
 	longest := len("enter to create here · esc to cancel")
-	for _, repo := range rp.repos {
-		if n := rp.nameColumn() + 2 + len(filepath.Dir(repo)); n > longest {
-			longest = n
-		}
+	if root := rp.commonRoot(); root != "" && len(root)+6 > longest {
+		longest = len(root) + 6
+	}
+	// Every entry is padded to the same column, so one measurement covers them.
+	if n := rp.nameColumn(); n > longest {
+		longest = n
 	}
 	// The space either side of the name, plus the style's own horizontal padding:
 	// lipgloss Width() counts padding INSIDE the value, so leaving it out here
@@ -139,12 +141,52 @@ func (rp *RepoPicker) boxWidth() int {
 	return longest
 }
 
+// commonRoot is the deepest directory every repository sits under, or "" when
+// there is no useful one.
+//
+// Showing it once in the header and each entry relative to it removes the
+// repetition of the same absolute prefix on every line. A shallow prefix such
+// as "/" or "/home" is refused: stripping it would save nothing and make the
+// header a lie about how much was removed.
+func (rp *RepoPicker) commonRoot() string {
+	if len(rp.repos) == 0 {
+		return ""
+	}
+	root := filepath.Dir(rp.repos[0])
+	for _, repo := range rp.repos[1:] {
+		for root != "/" && root != "." && !strings.HasPrefix(repo+string(filepath.Separator), root+string(filepath.Separator)) {
+			root = filepath.Dir(root)
+		}
+	}
+	// Two segments minimum, so "/" and "/home" are not treated as a root.
+	if strings.Count(strings.Trim(root, "/"), "/") < 1 {
+		return ""
+	}
+	return root
+}
+
+// label is what a repository shows as: its path relative to the common root
+// when there is one, otherwise the FULL path.
+//
+// The fallback is the full path rather than the name because without a shared
+// root two repositories can share a basename -- /lab/nag and /elsewhere/nag
+// would both read as "nag" and the list would offer two identical-looking
+// choices.
+func (rp *RepoPicker) label(repo string) string {
+	if root := rp.commonRoot(); root != "" {
+		if rel, err := filepath.Rel(root, repo); err == nil {
+			return rel
+		}
+	}
+	return repo
+}
+
 // nameColumn is the width the repository names are padded to, so the paths line
 // up in a column instead of stepping raggedly across the box.
 func (rp *RepoPicker) nameColumn() int {
 	w := 0
 	for _, repo := range rp.repos {
-		if n := len(filepath.Base(repo)); n > w {
+		if n := len(rp.label(repo)); n > w {
 			w = n
 		}
 	}
@@ -157,12 +199,15 @@ func (rp *RepoPicker) content() string {
 	if rp.HasMultiple() && rp.focused {
 		s.WriteString(rpDimStyle.Render("  ↑/↓ to change"))
 	}
+	if root := rp.commonRoot(); root != "" {
+		s.WriteString("\n")
+		s.WriteString(rpDimStyle.Render("under " + root))
+	}
 	s.WriteString("\n\n")
 
 	col := rp.nameColumn()
 	for i, repo := range rp.repos {
-		name := filepath.Base(repo)
-		parent := filepath.Dir(repo)
+		name := rp.label(repo)
 
 		line := " " + name + strings.Repeat(" ", col-len(name)) + " "
 		switch {
@@ -173,7 +218,6 @@ func (rp *RepoPicker) content() string {
 		default:
 			s.WriteString(rpDimStyle.Render(line))
 		}
-		s.WriteString(rpDimStyle.Render("  " + parent))
 		if i < len(rp.repos)-1 {
 			s.WriteString("\n")
 		}

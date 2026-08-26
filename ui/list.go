@@ -3,6 +3,7 @@ package ui
 import (
 	"claude-squad/log"
 	"claude-squad/session"
+	"claude-squad/session/tmux"
 	"errors"
 	"fmt"
 	"strings"
@@ -306,6 +307,32 @@ func (l *List) Kill() {
 func (l *List) Attach() (chan struct{}, error) {
 	targetInstance := l.items[l.selectedIdx]
 	return targetInstance.Attach()
+}
+
+// AttachWithPrefix attaches, first telling the session whether ctrl-q should
+// act as a command prefix.
+func (l *List) AttachWithPrefix(prefix bool) (chan struct{}, error) {
+	targetInstance := l.items[l.selectedIdx]
+	targetInstance.SetAttachPrefix(prefix)
+	return targetInstance.Attach()
+}
+
+// LastAttachCommand reports what ended the most recent attach.
+func (l *List) LastAttachCommand() byte {
+	if l.selectedIdx < 0 || l.selectedIdx >= len(l.items) {
+		return tmux.CmdDetach
+	}
+	return l.items[l.selectedIdx].LastAttachCommand()
+}
+
+// StepSelection moves the selection by delta, wrapping at both ends so that
+// stepping past the last session returns to the first rather than stopping.
+func (l *List) StepSelection(delta int) {
+	if len(l.items) == 0 {
+		return
+	}
+	n := len(l.items)
+	l.selectedIdx = ((l.selectedIdx+delta)%n + n) % n
 }
 
 // Up selects the prev item in the list.

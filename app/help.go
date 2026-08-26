@@ -42,6 +42,7 @@ func (h helpTypeGeneral) toContent() string {
 		headerStyle.Render("Managing:"),
 		keyStyle.Render("n")+descStyle.Render("         - Create a new session"),
 		keyStyle.Render("N")+descStyle.Render("         - Create a new session with a prompt"),
+		descStyle.Render("            (both ask which repository when repo_roots lists more than one)"),
 		keyStyle.Render("D")+descStyle.Render("         - Kill (delete) the selected session"),
 		keyStyle.Render("↑/j, ↓/k")+descStyle.Render("  - Navigate between sessions"),
 		keyStyle.Render("J/K")+descStyle.Render("       - Reorder sessions"),
@@ -57,6 +58,16 @@ func (h helpTypeGeneral) toContent() string {
 		keyStyle.Render("tab")+descStyle.Render("       - Switch between preview, diff, and terminal tabs"),
 		keyStyle.Render("shift-↓/↑")+descStyle.Render(" - Scroll in preview/diff/terminal view"),
 		keyStyle.Render("q")+descStyle.Render("         - Quit the application"),
+		"",
+		headerStyle.Render("Choosing a repository:"),
+		descStyle.Render("Set ")+keyStyle.Render("repo_roots")+descStyle.Render(" in config.json to directories holding repositories."),
+		descStyle.Render("Each is scanned one level deep, and ")+keyStyle.Render("n")+descStyle.Render("/")+keyStyle.Render("N")+descStyle.Render(" then offer the list. With none"),
+		descStyle.Render("set, sessions are created in the working directory as before."),
+		"",
+		headerStyle.Render("Without this interface:"),
+		keyStyle.Render("claude-squad ls")+descStyle.Render("            - List sessions (--json for scripts)"),
+		keyStyle.Render("claude-squad new <title>")+descStyle.Render("   - Create one (--repo to pick where)"),
+		descStyle.Render("Sessions are plain tmux sessions: ")+keyStyle.Render("tmux attach -t claudesquad_<title>"),
 	)
 	return content
 }

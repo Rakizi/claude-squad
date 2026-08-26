@@ -22,7 +22,13 @@ const (
 
 	KeyCheckout
 	KeyResume
-	KeyRepo   // Cycles which repository a new session is created in
+	// Display-only entries for the repository picker's menu bar, like
+	// KeySubmitName. They are deliberately NOT in the name->KeyName map: mapping
+	// "up"/"enter" there would hijack the real navigation keys.
+	KeyPickRepo
+	KeyPickCreate
+	KeyPickCancel
+
 	KeyPrompt // New key for entering a prompt
 	KeyHelp   // Key for showing help screen
 
@@ -49,7 +55,6 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"enter":      KeyEnter,
 	"o":          KeyEnter,
 	"n":          KeyNew,
-	"R":          KeyRepo,
 	"D":          KeyKill,
 	"q":          KeyQuit,
 	"tab":        KeyTab,
@@ -85,9 +90,17 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 		key.WithKeys("n"),
 		key.WithHelp("n", "new"),
 	),
-	KeyRepo: key.NewBinding(
-		key.WithKeys("R"),
-		key.WithHelp("R", "repo"),
+	KeyPickRepo: key.NewBinding(
+		key.WithKeys("up", "down"),
+		key.WithHelp("↑/↓", "choose repo"),
+	),
+	KeyPickCreate: key.NewBinding(
+		key.WithKeys("enter"),
+		key.WithHelp("enter", "create here"),
+	),
+	KeyPickCancel: key.NewBinding(
+		key.WithKeys("esc"),
+		key.WithHelp("esc", "cancel"),
 	),
 	KeyKill: key.NewBinding(
 		key.WithKeys("D"),

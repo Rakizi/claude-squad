@@ -239,6 +239,7 @@ func (m *home) beginNewInstance(promptAfter bool) (tea.Model, tea.Cmd) {
 		m.repoPicker = overlay.NewRepoPicker(m.repos)
 		m.repoPicker.Focus()
 		m.state = stateRepoPicker
+		m.menu.SetState(ui.StateRepoPicker)
 		m.promptAfterName = promptAfter
 		return m, nil
 	}

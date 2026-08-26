@@ -172,7 +172,11 @@ func init() {
 	newCmd.Flags().StringVar(&newProfile, "profile", "",
 		"Name of a configured profile to run. Conflicts with --program.")
 
+	killCmd.Flags().BoolVar(&killYes, "yes", false,
+		"Confirm removal. REQUIRED — this deletes the worktree and the branch.")
+
 	rootCmd.AddCommand(newCmd)
+	rootCmd.AddCommand(killCmd)
 	rootCmd.AddCommand(lsCmd)
 	rootCmd.AddCommand(debugCmd)
 	rootCmd.AddCommand(versionCmd)

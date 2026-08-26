@@ -73,6 +73,7 @@ func (h helpTypeGeneral) toContent() string {
 		headerStyle.Render("Without this interface:"),
 		keyStyle.Render("claude-squad ls")+descStyle.Render("            - List sessions (--json for scripts)"),
 		keyStyle.Render("claude-squad new <title>")+descStyle.Render("   - Create one (--repo where, --profile which)"),
+		keyStyle.Render("claude-squad kill <title>")+descStyle.Render("  - Remove one (--yes required; deletes the branch)"),
 		descStyle.Render("Sessions are plain tmux sessions: ")+keyStyle.Render("tmux attach -t claudesquad_<title>"),
 	)
 	return content

@@ -3,3 +3,7 @@
 claude-squad
 **.DS_Store
 cs
+/claude-squad
+
+# librarian working notes — PR drafts, not for upstream
+_pr/

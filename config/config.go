@@ -57,6 +57,19 @@ type Config struct {
 	// program already takes; ctrl-n and ctrl-p are readline's history keys inside
 	// the agent, and claiming them would make those unreachable.
 	CtrlQPrefix bool `json:"ctrl_q_prefix,omitempty"`
+
+	// ProfileOnNew offers the profile picker when creating a session with `n`,
+	// the key that does NOT ask for a prompt.
+	//
+	// Profiles were reachable only through `N`, which bundles the profile with
+	// a prompt box and a branch list -- so choosing an agent, or a branch, meant
+	// also typing a first message. Those are separate decisions: the profile and
+	// the branch are session SETUP, the prompt is the first thing you say.
+	//
+	// DEFAULT FALSE, deliberately. Off, `n` behaves exactly as it always has.
+	// `N` is untouched either way -- it already carries its own picker, and
+	// showing two would be worse than showing none.
+	ProfileOnNew bool `json:"profile_on_new,omitempty"`
 	// RepoRoots are directories to scan, one level deep, for git repositories
 	// that a new session may be created in.
 	//

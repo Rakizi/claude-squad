@@ -41,6 +41,7 @@ const (
 	StateNewInstance
 	StatePrompt
 	StateRepoPicker
+	StateProfilePicker
 )
 
 type Menu struct {
@@ -58,6 +59,7 @@ var defaultMenuOptions = []keys.KeyName{keys.KeyNew, keys.KeyPrompt, keys.KeyHel
 var newInstanceMenuOptions = []keys.KeyName{keys.KeySubmitName}
 var promptMenuOptions = []keys.KeyName{keys.KeySubmitName}
 var repoPickerMenuOptions = []keys.KeyName{keys.KeyPickRepo, keys.KeyPickCreate, keys.KeyPickCancel}
+var profilePickerMenuOptions = []keys.KeyName{keys.KeyPickProfile, keys.KeyPickCreate, keys.KeyPickCancel}
 
 func NewMenu() *Menu {
 	return &Menu{
@@ -86,7 +88,8 @@ func (m *Menu) SetState(state MenuState) {
 func (m *Menu) SetInstance(instance *session.Instance) {
 	m.instance = instance
 	// Only change the state if we're not in a special state (NewInstance or Prompt)
-	if m.state != StateNewInstance && m.state != StatePrompt && m.state != StateRepoPicker {
+	if m.state != StateNewInstance && m.state != StatePrompt && m.state != StateRepoPicker &&
+		m.state != StateProfilePicker {
 		if m.instance != nil {
 			m.state = StateDefault
 		} else {
@@ -121,6 +124,8 @@ func (m *Menu) updateOptions() {
 		m.options = promptMenuOptions
 	case StateRepoPicker:
 		m.options = repoPickerMenuOptions
+	case StateProfilePicker:
+		m.options = profilePickerMenuOptions
 	}
 }
 

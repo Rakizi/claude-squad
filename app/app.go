@@ -50,6 +50,10 @@ const (
 	// stateRepoPicker is the state when choosing which repository a new
 	// session will be created in. Only reached when more than one is available.
 	stateRepoPicker
+	// stateProfilePicker is the state when choosing which profile a new session
+	// runs. Only reached from `n`, only when profile_on_new is set, and only when
+	// more than one profile is configured.
+	stateProfilePicker
 )
 
 type home struct {
@@ -82,6 +86,11 @@ type home struct {
 	// directory first. With no repo_roots configured this holds just the
 	// working directory, which is how this behaved before it existed.
 	repos []string
+	// profilePicker is live only while state is stateProfilePicker.
+	profilePicker *overlay.ProfilePicker
+	// pendingRepo carries the chosen repository across the profile picker, which
+	// sits BETWEEN choosing a repository and creating anything.
+	pendingRepo string
 	// repoPicker is live only while state is stateRepoPicker.
 	repoPicker *overlay.RepoPicker
 
@@ -221,14 +230,52 @@ func (m *home) newInstanceRepo() string {
 	return cwd
 }
 
-func (m *home) startNewInstance(repoPath string, promptAfter bool) (tea.Model, tea.Cmd) {
+// shouldPickProfile reports whether the profile step is offered at all.
+//
+// It is the whole gate, in one place, so the answer cannot drift between the
+// key handler and the renderer. Three ways it says no, and each matters:
+//
+//	promptAfter   this is `N`, whose prompt overlay ALREADY carries a profile
+//	              picker. Two pickers for one choice is worse than none.
+//	!ProfileOnNew the default. `n` behaves exactly as it always has, and an
+//	              install that never sets this sees no change whatsoever.
+//	<2 profiles   one profile is not a choice; a list of one is a keypress
+//	              that teaches the reader nothing.
+func shouldPickProfile(cfg *config.Config, promptAfter bool) bool {
+	if promptAfter || cfg == nil || !cfg.ProfileOnNew {
+		return false
+	}
+	return len(cfg.GetProfiles()) > 1
+}
+
+// chooseProfile is the step between picking a repository and creating anything.
+//
+// It is skipped entirely unless profile_on_new is set AND more than one profile
+// is configured AND this is `n` rather than `N`. `N` already carries a profile
+// picker inside its prompt overlay, and offering two would be worse than one.
+func (m *home) chooseProfile(repoPath string, promptAfter bool) (tea.Model, tea.Cmd) {
+	if !shouldPickProfile(m.appConfig, promptAfter) {
+		return m.startNewInstance(repoPath, promptAfter, m.program)
+	}
+	picker := overlay.NewProfilePicker(m.appConfig.GetProfiles())
+	picker.Focus()
+	m.profilePicker = picker
+	m.pendingRepo = repoPath
+	m.repoPicker = nil
+	m.state = stateProfilePicker
+	m.menu.SetState(ui.StateProfilePicker)
+	m.promptAfterName = promptAfter
+	return m, nil
+}
+
+func (m *home) startNewInstance(repoPath string, promptAfter bool, program string) (tea.Model, tea.Cmd) {
 	if repoPath == "" {
 		repoPath = "."
 	}
 	instance, err := session.NewInstance(session.InstanceOptions{
 		Title:   "",
 		Path:    repoPath,
-		Program: m.program,
+		Program: program,
 	})
 	if err != nil {
 		return m, m.handleError(err)
@@ -240,6 +287,8 @@ func (m *home) startNewInstance(repoPath string, promptAfter bool) (tea.Model, t
 	m.menu.SetState(ui.StateNewInstance)
 	m.promptAfterName = promptAfter
 	m.repoPicker = nil
+	m.profilePicker = nil
+	m.pendingRepo = ""
 
 	if !promptAfter {
 		return m, nil
@@ -273,7 +322,7 @@ func (m *home) beginNewInstance(promptAfter bool) (tea.Model, tea.Cmd) {
 	if len(m.repos) == 1 {
 		repo = m.repos[0]
 	}
-	return m.startNewInstance(repo, promptAfter)
+	return m.chooseProfile(repo, promptAfter)
 }
 
 func (m *home) Init() tea.Cmd {
@@ -499,7 +548,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		}
 		switch msg.Type {
 		case tea.KeyEnter:
-			return m.startNewInstance(m.repoPicker.GetSelectedRepo(), m.promptAfterName)
+			return m.chooseProfile(m.repoPicker.GetSelectedRepo(), m.promptAfterName)
 		case tea.KeyEsc, tea.KeyCtrlC:
 			// Nothing has been created yet, so cancelling here leaves no worktree,
 			// no branch and no state entry behind.
@@ -510,6 +559,31 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		m.repoPicker.HandleKeyPress(msg)
+		return m, nil
+	}
+
+	if m.state == stateProfilePicker {
+		if m.profilePicker == nil {
+			log.ErrorLog.Printf("profile picker is nil while in stateProfilePicker")
+			m.state = stateDefault
+			m.menu.SetState(ui.StateDefault)
+			return m, nil
+		}
+		switch msg.Type {
+		case tea.KeyEnter:
+			return m.startNewInstance(m.pendingRepo, m.promptAfterName,
+				m.profilePicker.GetSelectedProfile().Program)
+		case tea.KeyEsc, tea.KeyCtrlC:
+			// Nothing has been created yet, so cancelling leaves no worktree, no
+			// branch and no state entry behind.
+			m.profilePicker = nil
+			m.pendingRepo = ""
+			m.promptAfterName = false
+			m.state = stateDefault
+			m.menu.SetState(ui.StateDefault)
+			return m, nil
+		}
+		m.profilePicker.HandleKeyPress(msg)
 		return m, nil
 	}
 
@@ -1171,6 +1245,12 @@ func (m *home) View() string {
 			log.ErrorLog.Printf("confirmation overlay is nil")
 		}
 		return overlay.PlaceOverlay(0, 0, m.confirmationOverlay.Render(), mainView, true, true)
+	} else if m.state == stateProfilePicker {
+		if m.profilePicker == nil {
+			log.ErrorLog.Printf("profile picker is nil")
+			return mainView
+		}
+		return overlay.PlaceOverlay(0, 0, m.profilePicker.Render(), mainView, true, true)
 	} else if m.state == stateRepoPicker {
 		if m.repoPicker == nil {
 			log.ErrorLog.Printf("repo picker is nil")

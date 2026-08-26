@@ -26,6 +26,7 @@ const (
 	// KeySubmitName. They are deliberately NOT in the name->KeyName map: mapping
 	// "up"/"enter" there would hijack the real navigation keys.
 	KeyPickRepo
+	KeyPickProfile
 	KeyPickCreate
 	KeyPickCancel
 
@@ -93,6 +94,10 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	KeyPickRepo: key.NewBinding(
 		key.WithKeys("up", "down"),
 		key.WithHelp("↑/↓", "choose repo"),
+	),
+	KeyPickProfile: key.NewBinding(
+		key.WithKeys("up", "down"),
+		key.WithHelp("↑/↓", "choose profile"),
 	),
 	KeyPickCreate: key.NewBinding(
 		key.WithKeys("enter"),

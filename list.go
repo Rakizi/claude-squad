@@ -19,16 +19,24 @@ import (
 // session.InstanceData: this is a published output format that scripts will
 // parse, so it should not silently change when the stored representation does.
 type instanceView struct {
-	Title       string    `json:"title"`
-	Repo        string    `json:"repo"`
-	Branch      string    `json:"branch"`
-	Status      string    `json:"status"`
-	Worktree    string    `json:"worktree"`
-	TmuxSession string    `json:"tmux_session"`
-	TmuxAlive   bool      `json:"tmux_alive"`
-	Program     string    `json:"program"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	Title       string `json:"title"`
+	Repo        string `json:"repo"`
+	Branch      string `json:"branch"`
+	Status      string `json:"status"`
+	Worktree    string `json:"worktree"`
+	TmuxSession string `json:"tmux_session"`
+	TmuxAlive   bool   `json:"tmux_alive"`
+	//: Tmux is the SAME fact as TmuxAlive plus the one distinction a bool
+	//: cannot carry: a PAUSED session has no tmux session BY DESIGN, and
+	//: reporting that as "gone" reads as damage. Added alongside rather than
+	//: replacing tmux_alive, because the JSON shape is a contract.
+	//:   alive  the session exists
+	//:   gone   it should exist and does not -- a problem
+	//:   n/a    the instance is paused; absence is expected
+	Tmux      string    `json:"tmux"`
+	Program   string    `json:"program"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 func statusName(s session.Status) string {
@@ -44,6 +52,28 @@ func statusName(s session.Status) string {
 	default:
 		return fmt.Sprintf("unknown(%d)", int(s))
 	}
+}
+
+// tmuxState reports what the ABSENCE of a tmux session means for this instance.
+//
+// ⛔ "gone" and "not expected to be there" are different facts and a bool cannot
+// hold both. A PAUSED session is one that `c` checked out: it committed, tore
+// down the worktree and the tmux session, and KEPT the branch. Its tmux session
+// is supposed to be absent. Printing "gone" for it invites someone to treat a
+// working feature as damage.
+//
+// ⚠ The third state a reader might expect -- "could not tell" -- is handled
+// EARLIER and harder: if tmux cannot be listed at all, loadInstanceViews returns
+// couldNotLook and nothing is printed. So by the time this runs, absence is a
+// measured fact rather than a failed measurement.
+func tmuxState(status session.Status, alive bool) string {
+	if alive {
+		return "alive"
+	}
+	if status == session.Paused {
+		return "n/a"
+	}
+	return "gone"
 }
 
 // loadInstanceViews reads stored instances WITHOUT starting anything.
@@ -88,6 +118,7 @@ func loadInstanceViews() ([]instanceView, error) {
 			Worktree:    d.Worktree.WorktreePath,
 			TmuxSession: sessionName,
 			TmuxAlive:   isAlive,
+			Tmux:        tmuxState(d.Status, isAlive),
 			Program:     d.Program,
 			CreatedAt:   d.CreatedAt,
 			UpdatedAt:   d.UpdatedAt,
@@ -100,11 +131,7 @@ func renderInstanceTable(w io.Writer, views []instanceView) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "TITLE\tREPO\tBRANCH\tSTATUS\tTMUX")
 	for _, v := range views {
-		live := "gone"
-		if v.TmuxAlive {
-			live = "alive"
-		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", v.Title, v.Repo, v.Branch, v.Status, live)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", v.Title, v.Repo, v.Branch, v.Status, v.Tmux)
 	}
 	_ = tw.Flush()
 }

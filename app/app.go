@@ -9,8 +9,10 @@ import (
 	"claude-squad/ui"
 	"claude-squad/ui/overlay"
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -74,6 +76,13 @@ type home struct {
 	// promptAfterName tracks if we should enter prompt mode after naming
 	promptAfterName bool
 
+	// repos are the repositories a new session may be created in, working
+	// directory first. With no repo_roots configured this holds just the
+	// working directory, which is how this behaved before it existed.
+	repos []string
+	// repoIdx selects the entry of repos that the next new session uses.
+	repoIdx int
+
 	// keySent is used to manage underlining menu items
 	keySent bool
 
@@ -130,6 +139,13 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 		state:        stateDefault,
 		appState:     appState,
 	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		log.WarningLog.Printf("could not determine the working directory: %v", err)
+		cwd = "."
+	}
+	h.repos = git.DiscoverRepos(appConfig.RepoRoots, cwd)
+
 	h.list = ui.NewList(&h.spinner, autoYes)
 
 	// Load saved instances
@@ -178,6 +194,18 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 		log.ErrorLog.Print(err)
 	}
 	m.menu.SetSize(msg.Width, menuHeight)
+}
+
+// targetRepo is the directory the next new session is created in.
+//
+// It falls back to "." when discovery found nothing -- an empty list must not
+// stop the user creating a session in the directory they are already standing
+// in, which is what the hardcoded "." used to guarantee.
+func (m *home) targetRepo() string {
+	if len(m.repos) == 0 {
+		return "."
+	}
+	return m.repos[m.repoIdx%len(m.repos)]
 }
 
 func (m *home) Init() tea.Cmd {
@@ -624,7 +652,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 
 		instance, err := session.NewInstance(session.InstanceOptions{
 			Title:   "",
-			Path:    ".",
+			Path:    m.targetRepo(),
 			Program: m.program,
 		})
 		if err != nil {
@@ -645,7 +673,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		}
 		instance, err := session.NewInstance(session.InstanceOptions{
 			Title:   "",
-			Path:    ".",
+			Path:    m.targetRepo(),
 			Program: m.program,
 		})
 		if err != nil {
@@ -658,6 +686,17 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		m.menu.SetState(ui.StateNewInstance)
 
 		return m, nil
+	case keys.KeyRepo:
+		// Cycle which repository the NEXT new session is created in. Existing
+		// sessions are untouched: each one stores its own repository and is
+		// restored from that, not from this selection.
+		if len(m.repos) < 2 {
+			return m, m.notify(fmt.Sprintf(
+				"only one repository available (%s) — set repo_roots in config.json to add more",
+				filepath.Base(m.targetRepo())))
+		}
+		m.repoIdx = (m.repoIdx + 1) % len(m.repos)
+		return m, m.notify(fmt.Sprintf("new sessions will be created in %s", m.targetRepo()))
 	case keys.KeyUp:
 		m.list.Up()
 		return m, m.instanceChanged()
@@ -983,6 +1022,20 @@ func tickUpdateMetadataCmd(active []*session.Instance, selected *session.Instanc
 
 // handleError handles all errors which get bubbled up to the app. sets the error message. We return a callback tea.Cmd that returns a hideErrMsg message
 // which clears the error message after 3 seconds.
+// notify shows a transient message in the same box handleError uses, without
+// recording it as a failure. Cycling the target repository is not an error.
+func (m *home) notify(msg string) tea.Cmd {
+	log.InfoLog.Printf("%s", msg)
+	m.errBox.SetError(errors.New(msg))
+	return func() tea.Msg {
+		select {
+		case <-m.ctx.Done():
+		case <-time.After(3 * time.Second):
+		}
+		return hideErrMsg{}
+	}
+}
+
 func (m *home) handleError(err error) tea.Cmd {
 	log.ErrorLog.Printf("%v", err)
 	m.errBox.SetError(err)

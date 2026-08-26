@@ -44,6 +44,12 @@ type Config struct {
 	BranchPrefix string `json:"branch_prefix"`
 	// Profiles is a list of named program profiles.
 	Profiles []Profile `json:"profiles,omitempty"`
+	// RepoRoots are directories to scan, one level deep, for git repositories
+	// that a new session may be created in.
+	//
+	// Empty (the default) means only the working directory is offered, which is
+	// the behaviour when this field did not exist.
+	RepoRoots []string `json:"repo_roots,omitempty"`
 }
 
 // GetProgram returns the program to run. If Profiles is non-empty and

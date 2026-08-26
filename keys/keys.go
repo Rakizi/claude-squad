@@ -22,6 +22,7 @@ const (
 
 	KeyCheckout
 	KeyResume
+	KeyRepo   // Cycles which repository a new session is created in
 	KeyPrompt // New key for entering a prompt
 	KeyHelp   // Key for showing help screen
 
@@ -48,6 +49,7 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"enter":      KeyEnter,
 	"o":          KeyEnter,
 	"n":          KeyNew,
+	"R":          KeyRepo,
 	"D":          KeyKill,
 	"q":          KeyQuit,
 	"tab":        KeyTab,
@@ -82,6 +84,10 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	KeyNew: key.NewBinding(
 		key.WithKeys("n"),
 		key.WithHelp("n", "new"),
+	),
+	KeyRepo: key.NewBinding(
+		key.WithKeys("R"),
+		key.WithHelp("R", "repo"),
 	),
 	KeyKill: key.NewBinding(
 		key.WithKeys("D"),

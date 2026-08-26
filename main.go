@@ -168,7 +168,9 @@ func init() {
 	newCmd.Flags().StringVar(&newRepo, "repo", "",
 		"Repository to create the session in (default: the working directory)")
 	newCmd.Flags().StringVar(&newProgram, "program", "",
-		"Program to run in the session (default: default_program from config)")
+		"Literal command to run in the session. Conflicts with --profile.")
+	newCmd.Flags().StringVar(&newProfile, "profile", "",
+		"Name of a configured profile to run. Conflicts with --program.")
 
 	rootCmd.AddCommand(newCmd)
 	rootCmd.AddCommand(lsCmd)

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -15,7 +16,43 @@ import (
 var (
 	newRepo    string
 	newProgram string
+	newProfile string
 )
+
+// resolveProgram decides what command a new session runs.
+//
+// ⛔ `DefaultProgram` MUST NOT be read directly. It holds a profile's NAME when
+// profiles are configured, and only Config.GetProgram resolves that name to a
+// command -- reading the field raw would try to execute the literal string. A
+// default of "claude" happens to be on PATH and so would appear to work while
+// silently dropping every flag the profile carries; a default of "review" would
+// fail with a confusing "not found".
+func resolveProgram(cfg *config.Config, program, profile string) (string, error) {
+	if program != "" && profile != "" {
+		return "", refused(
+			"--program and --profile both given; they name the same thing two ways.\n" +
+				"Pass --profile to use a configured one, or --program for a literal command.")
+	}
+	if program != "" {
+		return program, nil
+	}
+	if profile == "" {
+		return cfg.GetProgram(), nil
+	}
+	names := make([]string, 0, len(cfg.Profiles))
+	for _, p := range cfg.Profiles {
+		if p.Name == profile {
+			return p.Program, nil
+		}
+		names = append(names, p.Name)
+	}
+	// Refused, not could-not-look: the config WAS read, and it says no such
+	// profile. A different argument may well succeed, so name the ones that would.
+	if len(names) == 0 {
+		return "", refused("no profile named %q, and no profiles are configured", profile)
+	}
+	return "", refused("no profile named %q. Configured: %s", profile, strings.Join(names, ", "))
+}
 
 // appendInstance adds an instance to stored state.
 //
@@ -73,6 +110,12 @@ session in state so the interface lists it the next time it reads state.
   claude-squad new my-task
   claude-squad new my-task --repo ../other-repo
   claude-squad new my-task --program "aider"
+  claude-squad new my-task --profile review
+
+--profile names an entry in the profiles list in config; --program is a
+literal command. They set the same thing, so passing both is refused. With
+neither, default_program is used -- and note that it is matched against a
+profile NAME first, so a profile's flags come along with it.
 
 Talk to the session afterwards without the interface:
 
@@ -118,9 +161,9 @@ Exit codes:
 			return refused("%s is not a git repository", repo)
 		}
 
-		program := newProgram
-		if program == "" {
-			program = config.LoadConfig().DefaultProgram
+		program, err := resolveProgram(config.LoadConfig(), newProgram, newProfile)
+		if err != nil {
+			return err
 		}
 
 		instance, err := session.NewInstance(session.InstanceOptions{

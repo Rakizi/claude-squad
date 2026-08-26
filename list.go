@@ -58,7 +58,7 @@ func loadInstanceViews() ([]instanceView, error) {
 	var stored []session.InstanceData
 	if raw := state.GetInstances(); len(raw) > 0 {
 		if err := json.Unmarshal(raw, &stored); err != nil {
-			return nil, fmt.Errorf("failed to read stored instances: %w", err)
+			return nil, couldNotLook("failed to read stored instances: %v", err)
 		}
 	}
 
@@ -67,7 +67,9 @@ func loadInstanceViews() ([]instanceView, error) {
 	// "could not tell".
 	live, err := tmux.LiveSessions(cmd.MakeExecutor())
 	if err != nil {
-		return nil, err
+		// Whether sessions are alive is UNKNOWN, not false. Reporting them as
+		// gone would be a lie a script would act on.
+		return nil, couldNotLook("failed to list tmux sessions: %v", err)
 	}
 	alive := make(map[string]struct{}, len(live))
 	for _, name := range live {
@@ -119,7 +121,13 @@ exists. A session listed as gone still has its worktree and branch on disk and
 can be resumed; one that is running but absent from this list is not tracked at
 all and will not appear in the interface either.
 
-Nothing is started, attached to or modified.`,
+Nothing is started, attached to or modified.
+
+Exit codes:
+
+  0  listed -- including "no sessions", which is an answer, not a failure
+  3  could not look -- state or tmux could not be read. Sessions are NOT
+     reported as gone in that case, because unknown is not the same as absent.`,
 	RunE: func(command *cobra.Command, args []string) error {
 		views, err := loadInstanceViews()
 		if err != nil {

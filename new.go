@@ -29,7 +29,7 @@ func appendInstance(instance *session.Instance) error {
 	var stored []session.InstanceData
 	if raw := state.GetInstances(); len(raw) > 0 {
 		if err := json.Unmarshal(raw, &stored); err != nil {
-			return fmt.Errorf("failed to read stored instances: %w", err)
+			return couldNotLook("failed to read stored instances: %v", err)
 		}
 	}
 
@@ -51,7 +51,7 @@ func titleTaken(title string) (bool, error) {
 	var stored []session.InstanceData
 	if raw := state.GetInstances(); len(raw) > 0 {
 		if err := json.Unmarshal(raw, &stored); err != nil {
-			return false, fmt.Errorf("failed to read stored instances: %w", err)
+			return false, couldNotLook("failed to read stored instances: %v", err)
 		}
 	}
 	for _, d := range stored {
@@ -78,11 +78,17 @@ Talk to the session afterwards without the interface:
 
   tmux send-keys -t "$(claude-squad ls --json | jq -r '.[]|select(.title=="my-task").tmux_session')" 'hello' Enter
 
-⚠ An interface already running will overwrite this session out of state the
-next time it saves. It holds its instance list in memory from when it started
-and writes that list whole, without re-reading. The worktree, branch and tmux
-session survive, but the entry disappears and the session stops being listed.
-Create from the command line while no interface is open, or restart it after.`,
+Safe to run while the interface is open: it re-reads state before saving, so a
+session created here is not erased by an interface that started before it. The
+interface lists it the next time it reads state.
+
+Exit codes:
+
+  0  created
+  1  bad arguments
+  2  refused -- understood and declined; a different title or path may work
+  3  could not look -- state or tmux could not be read, so nothing was
+     concluded and retrying the same call is unlikely to help`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(command *cobra.Command, args []string) error {
 		title := args[0]
@@ -92,7 +98,7 @@ Create from the command line while no interface is open, or restart it after.`,
 			return err
 		}
 		if taken {
-			return fmt.Errorf("a session named %q already exists", title)
+			return refused("a session named %q already exists", title)
 		}
 
 		repo := newRepo
@@ -109,7 +115,7 @@ Create from the command line while no interface is open, or restart it after.`,
 		// Checked before anything is created: Start would otherwise fail partway
 		// and leave the tmux session or the worktree behind.
 		if !git.IsRepo(repo) {
-			return fmt.Errorf("%s is not a git repository", repo)
+			return refused("%s is not a git repository", repo)
 		}
 
 		program := newProgram

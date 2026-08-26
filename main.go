@@ -187,6 +187,6 @@ func main() {
 		// anything scripting these commands -- a shell, CI, an agent -- reads a
 		// refusal as a success.
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		os.Exit(exitCodeFor(err))
 	}
 }

@@ -161,6 +161,12 @@ func init() {
 
 	lsCmd.Flags().BoolVar(&lsJSON, "json", false, "Output as JSON")
 
+	newCmd.Flags().StringVar(&newRepo, "repo", "",
+		"Repository to create the session in (default: the working directory)")
+	newCmd.Flags().StringVar(&newProgram, "program", "",
+		"Program to run in the session (default: default_program from config)")
+
+	rootCmd.AddCommand(newCmd)
 	rootCmd.AddCommand(lsCmd)
 	rootCmd.AddCommand(debugCmd)
 	rootCmd.AddCommand(versionCmd)
@@ -171,8 +177,16 @@ func main() {
 	// Extract the binary name from how this was invoked
 	binName = filepath.Base(os.Args[0])
 	rootCmd.Use = binName
+	// Usage belongs on a usage error, not on a runtime one, and the error is
+	// printed once below rather than by cobra as well.
+	rootCmd.SilenceUsage = true
+	rootCmd.SilenceErrors = true
 
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Println(err)
+		// Report on stderr and exit non-zero. Without this a failure exits 0, so
+		// anything scripting these commands -- a shell, CI, an agent -- reads a
+		// refusal as a success.
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 }

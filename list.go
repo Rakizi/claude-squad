@@ -33,10 +33,23 @@ type instanceView struct {
 	//:   alive  the session exists
 	//:   gone   it should exist and does not -- a problem
 	//:   n/a    the instance is paused; absence is expected
-	Tmux      string    `json:"tmux"`
-	Program   string    `json:"program"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Tmux string `json:"tmux"`
+	//: WorktreeState is what the DISK says about the path Worktree CLAIMS.
+	//: MEASURED 2026-08-26: a paused session left state reading
+	//: "ready · alive · <path>" while the path was gone and the session was
+	//: not running. ls verified the tmux claim and took every other field on
+	//: trust, so it repeated the store verbatim -- a mirror, not a report.
+	//:   present  the path is there
+	//:   missing  state names a path that is NOT there -- stale state, or the
+	//:            tree was removed behind its back
+	//:   n/a      paused; the worktree is torn down on purpose
+	//:   unknown  unreadable for some OTHER reason. Per-ROW, because one bad
+	//:            path must not blind the whole listing the way an
+	//:            unreachable tmux rightly does.
+	WorktreeState string    `json:"worktree_state"`
+	Program       string    `json:"program"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 func statusName(s session.Status) string {
@@ -52,6 +65,28 @@ func statusName(s session.Status) string {
 	default:
 		return fmt.Sprintf("unknown(%d)", int(s))
 	}
+}
+
+// worktreeState asks the DISK what state's worktree claim is worth.
+//
+// ⛔ ls already refuses to trust tmux; it took every other field on trust. That
+// asymmetry is how a paused session printed a worktree path that no longer
+// existed, with nothing marking it.
+func worktreeState(status session.Status, path string) string {
+	if path == "" {
+		return "n/a"
+	}
+	if _, err := os.Stat(path); err == nil {
+		return "present"
+	} else if !os.IsNotExist(err) {
+		// Not absent -- UNREADABLE. Reporting "missing" here would turn a
+		// permission problem into a removal.
+		return "unknown"
+	}
+	if status == session.Paused {
+		return "n/a"
+	}
+	return "missing"
 }
 
 // tmuxState reports what the ABSENCE of a tmux session means for this instance.
@@ -111,17 +146,18 @@ func loadInstanceViews() ([]instanceView, error) {
 		sessionName := tmux.SessionName(d.Title)
 		_, isAlive := alive[sessionName]
 		views = append(views, instanceView{
-			Title:       d.Title,
-			Repo:        d.Worktree.RepoPath,
-			Branch:      d.Branch,
-			Status:      statusName(d.Status),
-			Worktree:    d.Worktree.WorktreePath,
-			TmuxSession: sessionName,
-			TmuxAlive:   isAlive,
-			Tmux:        tmuxState(d.Status, isAlive),
-			Program:     d.Program,
-			CreatedAt:   d.CreatedAt,
-			UpdatedAt:   d.UpdatedAt,
+			Title:         d.Title,
+			Repo:          d.Worktree.RepoPath,
+			Branch:        d.Branch,
+			Status:        statusName(d.Status),
+			Worktree:      d.Worktree.WorktreePath,
+			TmuxSession:   sessionName,
+			TmuxAlive:     isAlive,
+			Tmux:          tmuxState(d.Status, isAlive),
+			WorktreeState: worktreeState(d.Status, d.Worktree.WorktreePath),
+			Program:       d.Program,
+			CreatedAt:     d.CreatedAt,
+			UpdatedAt:     d.UpdatedAt,
 		})
 	}
 	return views, nil
@@ -129,9 +165,9 @@ func loadInstanceViews() ([]instanceView, error) {
 
 func renderInstanceTable(w io.Writer, views []instanceView) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "TITLE\tREPO\tBRANCH\tSTATUS\tTMUX")
+	fmt.Fprintln(tw, "TITLE\tREPO\tBRANCH\tSTATUS\tTMUX\tWORKTREE")
 	for _, v := range views {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", v.Title, v.Repo, v.Branch, v.Status, v.Tmux)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", v.Title, v.Repo, v.Branch, v.Status, v.Tmux, v.WorktreeState)
 	}
 	_ = tw.Flush()
 }

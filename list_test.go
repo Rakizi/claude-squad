@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"testing"
 
 	"claude-squad/session"
@@ -66,8 +67,8 @@ func TestRenderInstanceTable(t *testing.T) {
 		// loadInstanceViews is the only thing that should ever build one.
 		var buf bytes.Buffer
 		renderInstanceTable(&buf, []instanceView{
-			{Title: "alive1", Status: "running", TmuxAlive: true, Tmux: "alive"},
-			{Title: "dead1", Status: "running", TmuxAlive: false, Tmux: "gone"},
+			{Title: "alive1", Status: "running", TmuxAlive: true, Tmux: "alive", WorktreeState: "present"},
+			{Title: "dead1", Status: "running", TmuxAlive: false, Tmux: "gone", WorktreeState: "present"},
 		})
 
 		out := buf.String()
@@ -83,7 +84,7 @@ func TestRenderInstanceTable(t *testing.T) {
 		// paused session's work exists.
 		var buf bytes.Buffer
 		renderInstanceTable(&buf, []instanceView{
-			{Title: "paused1", Status: "paused", TmuxAlive: false, Tmux: "n/a"},
+			{Title: "paused1", Status: "paused", TmuxAlive: false, Tmux: "n/a", WorktreeState: "n/a"},
 		})
 
 		out := buf.String()
@@ -122,5 +123,68 @@ func TestTmuxState(t *testing.T) {
 			tmuxState(session.Running, false): true,
 		}
 		assert.Len(t, got, 3, "alive, n/a and gone must not collapse")
+	})
+}
+
+func TestWorktreeState(t *testing.T) {
+	dir := t.TempDir()
+
+	t.Run("a path that exists is present", func(t *testing.T) {
+		assert.Equal(t, "present", worktreeState(session.Running, dir))
+	})
+
+	t.Run("state naming a path that is NOT there is MISSING", func(t *testing.T) {
+		// ⛔ THE CASE THIS EXISTS FOR. ls printed a worktree path for a session
+		// whose tree had been torn down, because it verified tmux and trusted
+		// everything else.
+		assert.Equal(t, "missing", worktreeState(session.Running, dir+"/nope"))
+		assert.Equal(t, "missing", worktreeState(session.Ready, dir+"/nope"))
+	})
+
+	t.Run("PAUSED with no worktree is n/a — torn down on purpose", func(t *testing.T) {
+		// The discriminating pair: identical absence, opposite meaning.
+		assert.Equal(t, "n/a", worktreeState(session.Paused, dir+"/nope"))
+	})
+
+	t.Run("a paused session whose worktree still exists says so", func(t *testing.T) {
+		// Paused does not mean "assume gone" — it means absence is expected.
+		// If the tree IS there, that is the fact to report.
+		assert.Equal(t, "present", worktreeState(session.Paused, dir))
+	})
+
+	t.Run("no path recorded is n/a, not missing", func(t *testing.T) {
+		assert.Equal(t, "n/a", worktreeState(session.Running, ""))
+	})
+
+	t.Run("UNREADABLE is unknown, not missing", func(t *testing.T) {
+		// ⛔ ADDED BECAUSE mutate-check REPORTED THIS BRANCH BLIND. Removing the
+		// unknown case entirely left the battery green — four states claimed,
+		// three tested, and the untested one was the could-not-look.
+		//
+		// A path under a directory with no execute bit gives EACCES from stat:
+		// the path is NOT known to be absent, it simply cannot be read. Calling
+		// that "missing" turns a permission problem into a removal.
+		locked := t.TempDir()
+		inner := locked + "/inner"
+		require.NoError(t, os.Mkdir(inner, 0o755))
+		require.NoError(t, os.Chmod(locked, 0o000))
+		t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+		if _, err := os.Stat(inner); err == nil || os.IsNotExist(err) {
+			t.Skip("COULD NOT LOOK: this filesystem or user ignores the mode bit, " +
+				"so EACCES cannot be produced. NOT a pass.")
+		}
+		assert.Equal(t, "unknown", worktreeState(session.Running, inner))
+		assert.Equal(t, "unknown", worktreeState(session.Paused, inner),
+			"unreadable is unreadable whatever the status — paused must not mask it")
+	})
+
+	t.Run("the values do not collapse", func(t *testing.T) {
+		got := map[string]bool{
+			worktreeState(session.Running, dir):         true,
+			worktreeState(session.Running, dir+"/nope"): true,
+			worktreeState(session.Paused, dir+"/nope"):  true,
+		}
+		assert.Len(t, got, 3, "present, missing and n/a must stay distinct")
 	})
 }

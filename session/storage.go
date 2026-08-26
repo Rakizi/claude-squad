@@ -72,6 +72,55 @@ func (s *Storage) SaveInstances(instances []*Instance) error {
 	return s.state.SaveInstances(jsonData)
 }
 
+// SyncInstances saves the caller's instances WITHOUT discarding instances that
+// another writer added since this process last read state.
+//
+// SaveInstances writes the caller's list verbatim, which is correct for
+// DeleteInstance and UpdateInstance -- they compute the exact list they intend
+// to persist. It is wrong for a caller that only means "save what I have":
+// anything a second writer added is erased, and because the worktree and tmux
+// session are created before the save, the erased instance keeps running while
+// vanishing from every list. That is indistinguishable from a UI bug.
+//
+// The merge deliberately works on InstanceData, not *Instance. LoadInstances
+// calls FromInstanceData, which calls Start(false) and restores a tmux session
+// for every non-paused entry -- side effects no save path should trigger. This
+// reads the stored JSON directly instead, so it stays inert.
+//
+// The caller's copy wins for any title it holds; disk-only titles are carried
+// through untouched. To REMOVE an instance, use DeleteInstance -- omitting it
+// here does not delete it.
+func (s *Storage) SyncInstances(instances []*Instance) error {
+	data := make([]InstanceData, 0, len(instances))
+	held := make(map[string]struct{}, len(instances))
+	for _, instance := range instances {
+		if !instance.Started() {
+			continue
+		}
+		d := instance.ToInstanceData()
+		data = append(data, d)
+		held[d.Title] = struct{}{}
+	}
+
+	var stored []InstanceData
+	if raw := s.state.GetInstances(); len(raw) > 0 {
+		if err := json.Unmarshal(raw, &stored); err != nil {
+			return fmt.Errorf("failed to unmarshal stored instances: %w", err)
+		}
+	}
+	for _, d := range stored {
+		if _, ok := held[d.Title]; !ok {
+			data = append(data, d)
+		}
+	}
+
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("failed to marshal instances: %w", err)
+	}
+	return s.state.SaveInstances(jsonData)
+}
+
 // LoadInstances loads the list of instances from disk
 func (s *Storage) LoadInstances() ([]*Instance, error) {
 	jsonData := s.state.GetInstances()

@@ -1250,7 +1250,7 @@ func (m *home) View() string {
 			log.ErrorLog.Printf("profile picker is nil")
 			return mainView
 		}
-		return overlay.PlaceOverlay(0, 0, m.profilePicker.Render(), mainView, true, true)
+		return overlay.PlaceOverlay(0, 0, m.profilePicker.RenderStandalone(), mainView, true, true)
 	} else if m.state == stateRepoPicker {
 		if m.repoPicker == nil {
 			log.ErrorLog.Printf("repo picker is nil")

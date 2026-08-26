@@ -84,6 +84,24 @@ var (
 )
 
 // Render renders the profile picker.
+// RenderStandalone draws the picker as its own overlay, with a border and a
+// footer naming the keys.
+//
+// ⛔ Render() ALONE IS NOT ENOUGH ON ITS OWN. It was written to sit INSIDE the
+// prompt overlay, which supplies the frame -- so used directly as an overlay it
+// draws bare text straight over the panel behind it, with no border and nothing
+// to say where it starts. MEASURED 2026-08-26 by capturing the live pane: the
+// unit tests could not see this, and the repo picker next to it looked correct,
+// which is exactly what made the difference legible.
+func (pp *ProfilePicker) RenderStandalone() string {
+	style := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("62")).
+		Padding(1, 2)
+	return style.Render(pp.Render() + "\n\n" +
+		ppDimStyle.Render("enter to create here · esc to cancel"))
+}
+
 func (pp *ProfilePicker) Render() string {
 	var s strings.Builder
 	s.WriteString(ppLabelStyle.Render("Profile"))

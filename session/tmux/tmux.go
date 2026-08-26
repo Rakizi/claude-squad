@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -18,6 +19,22 @@ import (
 
 	"github.com/creack/pty"
 )
+
+// programName is the agent a program string runs, ignoring any path and any
+// arguments: "/home/rakizi/.local/bin/claude --add-dir /x" is "claude".
+//
+// The string is a shell command, and the -p flag documents passing arguments
+// ("aider --model ..."), so matching it whole is wrong. It was matched three
+// different ways before this: HasSuffix, an exact ==, and HasPrefix, which
+// meant an absolute path to claude already failed the == and lost prompt
+// detection, and adding any argument broke the HasSuffix too.
+func programName(program string) string {
+	fields := strings.Fields(program)
+	if len(fields) == 0 {
+		return ""
+	}
+	return filepath.Base(fields[0])
+}
 
 const ProgramClaude = "claude"
 
@@ -193,7 +210,7 @@ func (t *TmuxSession) CheckAndHandleTrustPrompt() bool {
 		return false
 	}
 
-	if strings.HasSuffix(t.program, ProgramClaude) {
+	if programName(t.program) == ProgramClaude {
 		if strings.Contains(content, "Do you trust the files in this folder?") ||
 			strings.Contains(content, "new MCP server") {
 			if err := t.TapEnter(); err != nil {
@@ -280,11 +297,11 @@ func (t *TmuxSession) HasUpdated() (updated bool, hasPrompt bool) {
 	}
 
 	// Only set hasPrompt for claude and aider. Use these strings to check for a prompt.
-	if t.program == ProgramClaude {
+	if programName(t.program) == ProgramClaude {
 		hasPrompt = strings.Contains(content, "No, and tell Claude what to do differently")
-	} else if strings.HasPrefix(t.program, ProgramAider) {
+	} else if programName(t.program) == ProgramAider {
 		hasPrompt = strings.Contains(content, "(Y)es/(N)o/(D)on't ask again")
-	} else if strings.HasPrefix(t.program, ProgramGemini) {
+	} else if programName(t.program) == ProgramGemini {
 		hasPrompt = strings.Contains(content, "Yes, allow once")
 	}
 

@@ -39,17 +39,21 @@ var (
 				return err
 			}
 
-			// Check if we're in a git repository
 			currentDir, err := filepath.Abs(".")
 			if err != nil {
 				return fmt.Errorf("failed to get current directory: %w", err)
 			}
 
-			if !git.IsGitRepo(currentDir) {
-				return fmt.Errorf("error: %s must be run from within a git repository", binName)
-			}
-
 			cfg := config.LoadConfig()
+
+			// A repository is required, but it no longer has to be THIS directory:
+			// with repo_roots configured the picker can offer one, so refusing to
+			// start outside a repository would block a setup that works.
+			if !git.IsGitRepo(currentDir) && len(git.DiscoverRepos(cfg.RepoRoots, "")) == 0 {
+				return fmt.Errorf(
+					"error: %s must be run from within a git repository, "+
+						"or with repo_roots set in config.json", binName)
+			}
 
 			// Program flag overrides config
 			program := cfg.GetProgram()

@@ -206,6 +206,21 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 // repoPath "" means the working directory, which is what the hardcoded "." used
 // to guarantee: discovery finding nothing must never stop someone creating a
 // session where they already are.
+// newInstanceRepo is the repository the session being created belongs to.
+//
+// It reads the instance's own stored path rather than the working directory,
+// because with repo_roots configured those are routinely different.
+func (m *home) newInstanceRepo() string {
+	if inst := m.list.GetSelectedInstance(); inst != nil && inst.Path != "" {
+		return inst.Path
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "."
+	}
+	return cwd
+}
+
 func (m *home) startNewInstance(repoPath string, promptAfter bool) (tea.Model, tea.Cmd) {
 	if repoPath == "" {
 		repoPath = "."
@@ -225,7 +240,17 @@ func (m *home) startNewInstance(repoPath string, promptAfter bool) (tea.Model, t
 	m.menu.SetState(ui.StateNewInstance)
 	m.promptAfterName = promptAfter
 	m.repoPicker = nil
-	return m, nil
+
+	if !promptAfter {
+		return m, nil
+	}
+	// Refresh remote-tracking branches for the repository actually chosen, so the
+	// branch picker offers that repository's branches rather than stale ones.
+	repo := instance.Path
+	return m, func() tea.Msg {
+		git.FetchBranches(repo)
+		return nil
+	}
 }
 
 // beginNewInstance opens the repository picker when there is a real choice, and
@@ -709,18 +734,9 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 				fmt.Errorf("you can't create more than %d instances", GlobalInstanceLimit))
 		}
 
-		// Start a background fetch so branches are up to date by the time the picker opens
-		fetchCmd := func() tea.Msg {
-			currentDir, _ := os.Getwd()
-			git.FetchBranches(currentDir)
-			return nil
-		}
-
-		model, cmd := m.beginNewInstance(true)
-		if cmd != nil {
-			return model, tea.Batch(cmd, fetchCmd)
-		}
-		return model, fetchCmd
+		// The fetch cannot happen here: the repository has not been chosen yet.
+		// It is started in startNewInstance, once there is a repository to fetch.
+		return m.beginNewInstance(true)
 	case keys.KeyNew:
 		return m.beginNewInstance(false)
 	case keys.KeyUp:
@@ -970,9 +986,14 @@ func (m *home) scheduleBranchSearch(filter string, version uint64) tea.Cmd {
 
 // runBranchSearch returns a tea.Cmd that performs the git search in the background.
 func (m *home) runBranchSearch(filter string, version uint64) tea.Cmd {
+	// Search the repository the session is being created in. Using the working
+	// directory instead lists the branches of wherever the interface happens to
+	// have been started, which is a different repository as soon as repo_roots
+	// makes another one selectable -- and the branches offered then belong to
+	// something the session will never touch.
+	repo := m.newInstanceRepo()
 	return func() tea.Msg {
-		currentDir, _ := os.Getwd()
-		branches, err := git.SearchBranches(currentDir, filter)
+		branches, err := git.SearchBranches(repo, filter)
 		if err != nil {
 			log.WarningLog.Printf("branch search failed: %v", err)
 			return nil

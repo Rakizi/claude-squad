@@ -83,6 +83,10 @@ func (rp *RepoPicker) GetSelectedRepo() string {
 // sees a prompt that has only one answer.
 func (rp *RepoPicker) HasMultiple() bool { return len(rp.repos) > 1 }
 
+// rpPadX is the horizontal padding, named once so Render and boxWidth cannot
+// disagree about it.
+const rpPadX = 2
+
 var (
 	rpLabelStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("62")).
@@ -105,27 +109,46 @@ func (rp *RepoPicker) Render() string {
 	style := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("62")).
-		Padding(1, 2)
+		Padding(1, rpPadX)
 	if w := rp.boxWidth(); w > 0 {
 		style = style.Width(w)
 	}
 	return style.Render(rp.content())
 }
 
-// boxWidth is the configured width, or enough for the longest entry when the
-// caller never set one -- a picker must not depend on a resize event having
-// arrived before it is first drawn.
+// boxWidth sizes the box to its CONTENT, capped by whatever the caller set as
+// the available width.
+//
+// Setting it to a fraction of the terminal instead wraps the longest entry onto
+// a second line, which breaks the one-repository-per-line reading the list
+// depends on. Content decides the width; the terminal only decides the ceiling.
 func (rp *RepoPicker) boxWidth() int {
-	if rp.width > 0 {
-		return rp.width
-	}
 	longest := len("enter to create here · esc to cancel")
 	for _, repo := range rp.repos {
-		if n := len(filepath.Base(repo)) + len(filepath.Dir(repo)) + 4; n > longest {
+		if n := rp.nameColumn() + 2 + len(filepath.Dir(repo)); n > longest {
 			longest = n
 		}
 	}
+	// The space either side of the name, plus the style's own horizontal padding:
+	// lipgloss Width() counts padding INSIDE the value, so leaving it out here
+	// hands the content four fewer columns than it needs and wraps every line.
+	longest += 2 + (rpPadX * 2)
+	if rp.width > 0 && longest > rp.width {
+		return rp.width
+	}
 	return longest
+}
+
+// nameColumn is the width the repository names are padded to, so the paths line
+// up in a column instead of stepping raggedly across the box.
+func (rp *RepoPicker) nameColumn() int {
+	w := 0
+	for _, repo := range rp.repos {
+		if n := len(filepath.Base(repo)); n > w {
+			w = n
+		}
+	}
+	return w
 }
 
 func (rp *RepoPicker) content() string {
@@ -136,11 +159,12 @@ func (rp *RepoPicker) content() string {
 	}
 	s.WriteString("\n\n")
 
+	col := rp.nameColumn()
 	for i, repo := range rp.repos {
 		name := filepath.Base(repo)
 		parent := filepath.Dir(repo)
 
-		line := " " + name + " "
+		line := " " + name + strings.Repeat(" ", col-len(name)) + " "
 		switch {
 		case i == rp.cursor && rp.focused:
 			s.WriteString(rpSelectedStyle.Render(line))

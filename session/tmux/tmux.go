@@ -105,7 +105,7 @@ func (t *TmuxSession) Start(workDir string) error {
 	if err != nil {
 		// Cleanup any partially created session if any exists.
 		if t.DoesSessionExist() {
-			cleanupCmd := exec.Command("tmux", "kill-session", "-t", t.sanitizedName)
+			cleanupCmd := exec.Command("tmux", "kill-session", fmt.Sprintf("-t=%s", t.sanitizedName))
 			if cleanupErr := t.cmdExec.Run(cleanupCmd); cleanupErr != nil {
 				err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
 			}
@@ -134,13 +134,13 @@ func (t *TmuxSession) Start(workDir string) error {
 	ptmx.Close()
 
 	// Set history limit to enable scrollback (default is 2000, we'll use 10000 for more history)
-	historyCmd := exec.Command("tmux", "set-option", "-t", t.sanitizedName, "history-limit", "10000")
+	historyCmd := exec.Command("tmux", "set-option", fmt.Sprintf("-t=%s", t.sanitizedName), "history-limit", "10000")
 	if err := t.cmdExec.Run(historyCmd); err != nil {
 		log.InfoLog.Printf("Warning: failed to set history-limit for session %s: %v", t.sanitizedName, err)
 	}
 
 	// Enable mouse scrolling for the session
-	mouseCmd := exec.Command("tmux", "set-option", "-t", t.sanitizedName, "mouse", "on")
+	mouseCmd := exec.Command("tmux", "set-option", fmt.Sprintf("-t=%s", t.sanitizedName), "mouse", "on")
 	if err := t.cmdExec.Run(mouseCmd); err != nil {
 		log.InfoLog.Printf("Warning: failed to enable mouse scrolling for session %s: %v", t.sanitizedName, err)
 	}
@@ -192,7 +192,7 @@ func (t *TmuxSession) Restore() error {
 		return ErrSessionNotFound
 	}
 
-	ptmx, err := t.ptyFactory.Start(exec.Command("tmux", "attach-session", "-t", t.sanitizedName))
+	ptmx, err := t.ptyFactory.Start(exec.Command("tmux", "attach-session", fmt.Sprintf("-t=%s", t.sanitizedName)))
 	if err != nil {
 		return fmt.Errorf("error opening PTY: %w", err)
 	}
@@ -431,7 +431,7 @@ func (t *TmuxSession) Close() error {
 		t.ptmx = nil
 	}
 
-	cmd := exec.Command("tmux", "kill-session", "-t", t.sanitizedName)
+	cmd := exec.Command("tmux", "kill-session", fmt.Sprintf("-t=%s", t.sanitizedName))
 	if err := t.cmdExec.Run(cmd); err != nil {
 		errs = append(errs, fmt.Errorf("error killing tmux session: %w", err))
 	}
@@ -472,13 +472,29 @@ func (t *TmuxSession) DoesSessionExist() bool {
 	return t.cmdExec.Run(existsCmd) == nil
 }
 
+// tmuxErr unwraps the stderr tmux actually wrote. exec.Cmd.Output() stores it on
+// *exec.ExitError, and "%v" on that prints only "exit status 1" -- the reason is
+// captured and discarded.
+//
+// MEASURED 2026-08-26: the TUI flashed "error capturing pane content: exit status 1"
+// on every poll tick with nothing saying WHY, while `tmux capture-pane` run by hand
+// against every live session succeeded. One signal substituting for another: an exit
+// code standing in for a diagnostic that was right there.
+func tmuxErr(err error) string {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && len(ee.Stderr) > 0 {
+		return fmt.Sprintf("%v: %s", err, strings.TrimSpace(string(ee.Stderr)))
+	}
+	return fmt.Sprintf("%v", err)
+}
+
 // CapturePaneContent captures the content of the tmux pane
 func (t *TmuxSession) CapturePaneContent() (string, error) {
 	// Add -e flag to preserve escape sequences (ANSI color codes)
-	cmd := exec.Command("tmux", "capture-pane", "-p", "-e", "-J", "-t", t.sanitizedName)
+	cmd := exec.Command("tmux", "capture-pane", "-p", "-e", "-J", fmt.Sprintf("-t=%s", t.sanitizedName))
 	output, err := t.cmdExec.Output(cmd)
 	if err != nil {
-		return "", fmt.Errorf("error capturing pane content: %v", err)
+		return "", fmt.Errorf("error capturing pane content: %s", tmuxErr(err))
 	}
 	return string(output), nil
 }
@@ -487,10 +503,10 @@ func (t *TmuxSession) CapturePaneContent() (string, error) {
 // start and end specify the starting and ending line numbers (use "-" for the start/end of history)
 func (t *TmuxSession) CapturePaneContentWithOptions(start, end string) (string, error) {
 	// Add -e flag to preserve escape sequences (ANSI color codes)
-	cmd := exec.Command("tmux", "capture-pane", "-p", "-e", "-J", "-S", start, "-E", end, "-t", t.sanitizedName)
+	cmd := exec.Command("tmux", "capture-pane", "-p", "-e", "-J", "-S", start, "-E", end, fmt.Sprintf("-t=%s", t.sanitizedName))
 	output, err := t.cmdExec.Output(cmd)
 	if err != nil {
-		return "", fmt.Errorf("failed to capture tmux pane content with options: %v", err)
+		return "", fmt.Errorf("failed to capture tmux pane content with options: %s", tmuxErr(err))
 	}
 	return string(output), nil
 }

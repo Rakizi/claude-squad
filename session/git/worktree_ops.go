@@ -89,24 +89,43 @@ func (g *GitWorktree) setupNewWorktree() error {
 	// Clean up any existing branch using git CLI (much faster than go-git PlainOpen)
 	_, _ = g.runGitCommand(g.repoPath, "branch", "-D", g.branchName) // Ignore error if branch doesn't exist
 
-	output, err := g.runGitCommand(g.repoPath, "rev-parse", "HEAD")
+	// ⛔ THE BASE IS THE REMOTE DEFAULT BRANCH, NOT THE PARENT'S LOCAL HEAD.
+	//
+	// This resolves the TODO that stood here ("we might want to give an option
+	// to use main/master instead of the current branch") and it is a CORRECTNESS
+	// fix, not a preference.
+	//
+	// Reading the parent checkout's HEAD makes the shared checkout's transient
+	// state the silent default base for every new session. MEASURED 2026-08-26 in
+	// ~/the-lab/NextActionGuide: the reflog shows the shared checkout branch-
+	// switched and committed on across two days, and for ~48 minutes its HEAD was
+	// a feature branch. A session created in that window would have branched off
+	// that feature branch and opened a plausible PR carrying someone else's
+	// commits. Nothing was cut in that window -- timing, not protection.
+	//
+	// ⚠ AND A HUMAN IS NOT THE ONLY CALLER. ops/bin/dispatch launches workers on a
+	// systemd timer, unattended. A person running `cs new` might notice the base
+	// looked odd. A timer never will.
+	baseRef, err := g.resolveBaseRef()
+	if err != nil {
+		return err
+	}
+	output, err := g.runGitCommand(g.repoPath, "rev-parse", baseRef)
 	if err != nil {
 		if strings.Contains(err.Error(), "fatal: ambiguous argument 'HEAD'") ||
 			strings.Contains(err.Error(), "fatal: not a valid object name") ||
 			strings.Contains(err.Error(), "fatal: HEAD: not a valid object name") {
 			return fmt.Errorf("this appears to be a brand new repository: please create an initial commit before creating an instance")
 		}
-		return fmt.Errorf("failed to get HEAD commit hash: %w", err)
+		return fmt.Errorf("failed to resolve base ref %s: %w", baseRef, err)
 	}
 	headCommit := strings.TrimSpace(string(output))
 	g.baseCommitSHA = headCommit
 
-	// Create a new worktree from the HEAD commit
-	// Otherwise, we'll inherit uncommitted changes from the previous worktree.
-	// This way, we can start the worktree with a clean slate.
-	// TODO: we might want to give an option to use main/master instead of the current branch.
+	// Create a new worktree from the resolved base commit, so it starts clean and
+	// does not inherit the parent worktree's uncommitted changes.
 	if _, err := g.runGitCommand(g.repoPath, "worktree", "add", "-b", g.branchName, g.worktreePath, headCommit); err != nil {
-		return fmt.Errorf("failed to create worktree from commit %s: %w", headCommit, err)
+		return fmt.Errorf("failed to create worktree from %s (%s): %w", baseRef, headCommit, err)
 	}
 
 	return nil
@@ -233,4 +252,63 @@ func CleanupWorktrees() error {
 	}
 
 	return nil
+}
+
+// resolveBaseRef returns the ref a new session's worktree should be cut from.
+//
+// ⭐ THREE OUTCOMES, NOT TWO -- and the third is why this is a function and not
+// one inline call. "the remote default branch" / "there is no remote, so the
+// local HEAD is genuinely the only base there is" / "there IS a remote but we
+// could not read it" are different situations, and the last one must not
+// silently render as the second. A repo that HAS an origin whose HEAD we cannot
+// read is exactly the case where falling back to local HEAD reintroduces the
+// defect this function exists to remove -- so it is an error, not a fallback.
+//
+// CLAUDE_SQUAD_BASE_REF overrides everything, for the deliberate case of cutting
+// a session from somewhere specific.
+func (g *GitWorktree) resolveBaseRef() (string, error) {
+	if ref := strings.TrimSpace(os.Getenv("CLAUDE_SQUAD_BASE_REF")); ref != "" {
+		return ref, nil
+	}
+
+	remotes, err := g.runGitCommand(g.repoPath, "remote")
+	if err != nil {
+		return "", fmt.Errorf("could not determine whether this repo has a remote: %w", err)
+	}
+	if strings.TrimSpace(string(remotes)) == "" {
+		// No remote at all. Local HEAD is not a compromise here -- it is the only
+		// base that exists, and there is no shared branch for it to drift from.
+		return "HEAD", nil
+	}
+
+	// origin/HEAD points at the remote's default branch when it has been set.
+	if out, err := g.runGitCommand(g.repoPath, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"); err == nil {
+		if ref := strings.TrimSpace(string(out)); ref != "" {
+			return ref, nil
+		}
+	}
+
+	// Not set locally -- ask the remote itself, then fall back to the usual names.
+	if out, err := g.runGitCommand(g.repoPath, "ls-remote", "--symref", "origin", "HEAD"); err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			if strings.HasPrefix(line, "ref: refs/heads/") {
+				name := strings.TrimSpace(strings.TrimPrefix(strings.Fields(line)[1], "refs/heads/"))
+				if name != "" {
+					return "origin/" + name, nil
+				}
+			}
+		}
+	}
+	for _, name := range []string{"origin/develop", "origin/main", "origin/master"} {
+		if _, err := g.runGitCommand(g.repoPath, "rev-parse", "--verify", name); err == nil {
+			return name, nil
+		}
+	}
+
+	// ⛔ COULD NOT LOOK. There is a remote, but nothing we tried resolved. Do NOT
+	// fall back to local HEAD -- that is the exact defect, and a silent fallback
+	// would make it invisible again.
+	return "", fmt.Errorf("repo has a remote but no default branch could be resolved; " +
+		"set CLAUDE_SQUAD_BASE_REF to choose one explicitly (tried origin/HEAD, " +
+		"ls-remote, origin/develop, origin/main, origin/master)")
 }

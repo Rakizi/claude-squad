@@ -2,6 +2,7 @@ package main
 
 import (
 	"claude-squad/config"
+	"claude-squad/log"
 	"claude-squad/session"
 	"claude-squad/session/git"
 	"encoding/json"
@@ -134,6 +135,20 @@ Exit codes:
      concluded and retrying the same call is unlikely to help`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(command *cobra.Command, args []string) error {
+		// ⛔ WITHOUT THIS THE COMMAND PANICS, and it panics LATE -- after the
+		// worktree and branch already exist. session/tmux logs through
+		// log.InfoLog, which is nil until Initialize runs.
+		//
+		// MEASURED 2026-08-26: `claude-squad new x --profile y` segfaulted at
+		// session/tmux/tmux.go:185 on the history-limit warning, leaving a
+		// worktree and branch behind with no session and no state entry.
+		//
+		// ⭐ kill.go carries the identical fix and the identical comment. It was
+		// applied to ONE subcommand. `new` is the one nobody had run -- which is
+		// why the CLI looked built and was not.
+		log.Initialize(false)
+		defer log.Close()
+
 		title := args[0]
 
 		taken, err := titleTaken(title)

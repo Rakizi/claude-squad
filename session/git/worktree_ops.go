@@ -281,6 +281,27 @@ func (g *GitWorktree) resolveBaseRef() (string, error) {
 		return "HEAD", nil
 	}
 
+	// ⛔ THE REMOTE COUNTERPART OF THE BRANCH THIS CHECKOUT IS ON COMES FIRST,
+	//    BEFORE origin/HEAD. Found the hard way: NextActionGuide works on
+	//    `develop`, but its origin/HEAD points at `main`, and develop is 2,500
+	//    commits AHEAD of main. Preferring origin/HEAD cut every new session from
+	//    a base 2,500 commits stale -- far worse than the defect this function
+	//    was written to fix.
+	//
+	// ⭐ THE SPLIT THAT MAKES THIS SAFE: take the branch NAME from local HEAD,
+	//    take the COMMIT from the remote. A name cannot carry uncommitted work or
+	//    unpushed local commits, so the parent checkout's dirty state still
+	//    cannot leak into a new session -- which was the whole point.
+	if out, err := g.runGitCommand(g.repoPath, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
+		cur := strings.TrimSpace(string(out))
+		if cur != "" && cur != "HEAD" { // "HEAD" means detached: no branch name to use
+			remoteRef := "origin/" + cur
+			if _, err := g.runGitCommand(g.repoPath, "rev-parse", "--verify", remoteRef); err == nil {
+				return remoteRef, nil
+			}
+		}
+	}
+
 	// origin/HEAD points at the remote's default branch when it has been set.
 	if out, err := g.runGitCommand(g.repoPath, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"); err == nil {
 		if ref := strings.TrimSpace(string(out)); ref != "" {

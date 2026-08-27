@@ -178,6 +178,19 @@ func init() {
 	rootCmd.AddCommand(newCmd)
 	rootCmd.AddCommand(killCmd)
 	rootCmd.AddCommand(lsCmd)
+
+	// Cobra prints the error itself unless silenced. main() now reports it too,
+	// so without this the same line appears TWICE:
+	//
+	//   Error: unknown command "x" for "cs"
+	//   Run 'cs --help' for usage.
+	//   unknown command "x" for "cs"
+	//
+	// SilenceUsage is deliberately NOT set here. It was tried and made no
+	// observable difference to any case this change covers, and an unjustified
+	// line in a bug fix is one more thing a reviewer has to take on trust.
+	rootCmd.SilenceErrors = true
+
 	rootCmd.AddCommand(debugCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(resetCmd)
@@ -193,9 +206,16 @@ func main() {
 	rootCmd.SilenceErrors = true
 
 	if err := rootCmd.Execute(); err != nil {
-		// Report on stderr and exit non-zero. Without this a failure exits 0, so
-		// anything scripting these commands -- a shell, CI, an agent -- reads a
-		// refusal as a success.
+		// Report on stderr and exit NON-ZERO.
+		//
+		// Before this, a failure printed to stdout and returned 0, so anything
+		// driving these commands -- a shell script, CI, a wrapper -- read a
+		// refusal as a success. The error text landing on stdout compounded it:
+		// a caller capturing stdout got the error mixed into whatever it was
+		// parsing.
+		//
+		// ⭐ exitCodeFor(), not a bare 1: the tri-state survives into the exit
+		// status, so a caller can tell "refused" from "could not look".
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(exitCodeFor(err))
 	}

@@ -350,3 +350,44 @@ func TestSaveConfig(t *testing.T) {
 		assert.Equal(t, testConfig.BranchPrefix, loadedConfig.BranchPrefix)
 	})
 }
+
+func TestStateFileName(t *testing.T) {
+	t.Run("defaults to state.json", func(t *testing.T) {
+		t.Setenv(StateFileEnvVar, "")
+		assert.Equal(t, StateFileName, stateFileName())
+	})
+
+	t.Run("honours CLAUDE_SQUAD_STATE_FILE", func(t *testing.T) {
+		t.Setenv(StateFileEnvVar, "state-rakizi.json")
+		assert.Equal(t, "state-rakizi.json", stateFileName())
+	})
+
+	t.Run("two names in ONE dir stay independent", func(t *testing.T) {
+		// The shared-directory case: same config.json, separate session lists.
+		dir := t.TempDir()
+		t.Setenv(ConfigDirEnvVar, dir)
+
+		t.Setenv(StateFileEnvVar, "state-alice.json")
+		alice, err := GetConfigDir()
+		require.NoError(t, err)
+		alicePath := filepath.Join(alice, stateFileName())
+
+		t.Setenv(StateFileEnvVar, "state-bob.json")
+		bob, err := GetConfigDir()
+		require.NoError(t, err)
+		bobPath := filepath.Join(bob, stateFileName())
+
+		assert.Equal(t, alice, bob, "same config dir")
+		assert.NotEqual(t, alicePath, bobPath, "different state files")
+	})
+
+	t.Run("a path separator is REFUSED, not honoured", func(t *testing.T) {
+		// The override names a file INSIDE the config dir. Accepting a path
+		// would let it escape silently; CLAUDE_SQUAD_DIR is how you move the dir.
+		for _, bad := range []string{"../escape.json", "sub/state.json", "/etc/passwd", ".", ".."} {
+			t.Setenv(StateFileEnvVar, bad)
+			assert.Equal(t, StateFileName, stateFileName(),
+				"%q must fall back to the default", bad)
+		}
+	})
+}

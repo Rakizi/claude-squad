@@ -6,12 +6,35 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 const (
 	StateFileName     = "state.json"
 	InstancesFileName = "instances.json"
+
+	// StateFileEnvVar overrides the state FILENAME within the config directory.
+	// Use it when several people share one config directory -- a checked-in
+	// team config, say -- so each has their own session list
+	// (state-alice.json, state-bob.json) while sharing config.json.
+	//
+	// This is separate from CLAUDE_SQUAD_DIR, which moves the whole directory.
+	StateFileEnvVar = "CLAUDE_SQUAD_STATE_FILE"
 )
+
+// stateFileName returns the state filename, honouring $CLAUDE_SQUAD_STATE_FILE.
+//
+// The override is a BARE FILENAME, resolved inside the config directory. A value
+// containing a path separator is rejected in favour of the default rather than
+// silently writing outside the config dir -- moving the directory is what
+// CLAUDE_SQUAD_DIR is for.
+func stateFileName() string {
+	name := strings.TrimSpace(os.Getenv(StateFileEnvVar))
+	if name == "" || strings.ContainsAny(name, `/\`) || name == "." || name == ".." {
+		return StateFileName
+	}
+	return name
+}
 
 // InstanceStorage handles instance-related operations
 type InstanceStorage interface {
@@ -61,7 +84,7 @@ func LoadState() *State {
 		return DefaultState()
 	}
 
-	statePath := filepath.Join(configDir, StateFileName)
+	statePath := filepath.Join(configDir, stateFileName())
 	data, err := os.ReadFile(statePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -97,7 +120,7 @@ func SaveState(state *State) error {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
-	statePath := filepath.Join(configDir, StateFileName)
+	statePath := filepath.Join(configDir, stateFileName())
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal state: %w", err)

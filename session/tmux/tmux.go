@@ -180,13 +180,13 @@ func (t *TmuxSession) Start(workDir string) error {
 	ptmx.Close()
 
 	// Set history limit to enable scrollback (default is 2000, we'll use 10000 for more history)
-	historyCmd := exec.Command("tmux", "set-option", fmt.Sprintf("-t=%s", t.sanitizedName), "history-limit", "10000")
+	historyCmd := exec.Command("tmux", "set-option", "-t", t.sanitizedName, "history-limit", "10000")
 	if err := t.cmdExec.Run(historyCmd); err != nil {
 		log.InfoLog.Printf("Warning: failed to set history-limit for session %s: %v", t.sanitizedName, err)
 	}
 
 	// Enable mouse scrolling for the session
-	mouseCmd := exec.Command("tmux", "set-option", fmt.Sprintf("-t=%s", t.sanitizedName), "mouse", "on")
+	mouseCmd := exec.Command("tmux", "set-option", "-t", t.sanitizedName, "mouse", "on")
 	if err := t.cmdExec.Run(mouseCmd); err != nil {
 		log.InfoLog.Printf("Warning: failed to enable mouse scrolling for session %s: %v", t.sanitizedName, err)
 	}
@@ -563,10 +563,27 @@ func tmuxErr(err error) string {
 	return fmt.Sprintf("%v", err)
 }
 
+// ⛔ -t= IS A SESSION-TARGET FORM ONLY. It does NOT work on a PANE target.
+//
+// MEASURED 2026-08-26, after a change that swapped every -t for -t= to stop
+// prefix matching. Session-target commands accepted it; pane-target commands
+// did not, and the TUI showed a red error on every hover:
+//
+//	has-session  -t=NAME   rc=0
+//	list-panes   -t=NAME   rc=0
+//	set-option   -t=NAME   rc=1  no such session: =NAME
+//	capture-pane -t=NAME   rc=1  can't find pane: =NAME
+//
+// ⚠ set-option is the one that would have stayed silent: its failure is logged
+// as a warning, so history-limit and mouse were quietly not being set.
+//
+// ⭐ The exact-match change was still right for the SESSION commands -- a
+// prefix target would let kill-session on "nag-bug-17" hit "nag-bug-177".
+// Those keep -t=. These four do not.
 // CapturePaneContent captures the content of the tmux pane
 func (t *TmuxSession) CapturePaneContent() (string, error) {
 	// Add -e flag to preserve escape sequences (ANSI color codes)
-	cmd := exec.Command("tmux", "capture-pane", "-p", "-e", "-J", fmt.Sprintf("-t=%s", t.sanitizedName))
+	cmd := exec.Command("tmux", "capture-pane", "-p", "-e", "-J", "-t", t.sanitizedName)
 	output, err := t.cmdExec.Output(cmd)
 	if err != nil {
 		return "", fmt.Errorf("error capturing pane content: %s", tmuxErr(err))
@@ -578,7 +595,7 @@ func (t *TmuxSession) CapturePaneContent() (string, error) {
 // start and end specify the starting and ending line numbers (use "-" for the start/end of history)
 func (t *TmuxSession) CapturePaneContentWithOptions(start, end string) (string, error) {
 	// Add -e flag to preserve escape sequences (ANSI color codes)
-	cmd := exec.Command("tmux", "capture-pane", "-p", "-e", "-J", "-S", start, "-E", end, fmt.Sprintf("-t=%s", t.sanitizedName))
+	cmd := exec.Command("tmux", "capture-pane", "-p", "-e", "-J", "-S", start, "-E", end, "-t", t.sanitizedName)
 	output, err := t.cmdExec.Output(cmd)
 	if err != nil {
 		return "", fmt.Errorf("failed to capture tmux pane content with options: %s", tmuxErr(err))

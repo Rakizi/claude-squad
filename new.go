@@ -181,6 +181,26 @@ Exit codes:
 			return err
 		}
 
+		// ⛔ REFRESH THE REMOTE-TRACKING REFS BEFORE THE WORKTREE IS CUT.
+		//
+		// resolveBaseRef() correctly prefers `origin/<branch>` over local HEAD, but
+		// `origin/<branch>` is a CACHED ref in .git/refs/remotes/ — it is only as
+		// current as the last fetch. Naming the remote ref is necessary and NOT
+		// sufficient.
+		//
+		// MEASURED 2026-08-28 in ~/the-lab/NextActionGuide: local `develop` sat 30
+		// commits behind origin, and a worktree cut from it started 30 commits in
+		// the past. The TUI path already fetches (app/app.go, before the branch
+		// picker). THIS path did not, and this is the path `ops/bin/dispatch` uses
+		// on a systemd timer -- the unattended caller this file's own comment in
+		// session/git/worktree_ops.go warns about: "A person running `cs new` might
+		// notice the base looked odd. A timer never will."
+		//
+		// Best-effort by design: FetchBranches swallows its error, so an offline
+		// machine still creates the session rather than refusing. The base is then
+		// as current as the cache allows, which is the pre-existing behaviour.
+		git.FetchBranches(repo)
+
 		instance, err := session.NewInstance(session.InstanceOptions{
 			Title:   title,
 			Path:    repo,

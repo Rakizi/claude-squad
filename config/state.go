@@ -160,3 +160,40 @@ func (s *State) SetHelpScreensSeen(seen uint32) error {
 	s.HelpScreensSeen = seen
 	return SaveState(s)
 }
+
+// InstancesOnDisk reports what the state FILE holds, keeping apart the three
+// outcomes LoadState collapses into one.
+//
+//	raw, true, nil    the file was read; raw is what is stored (possibly "[]")
+//	nil, false, nil   there is no state file yet -- nothing has been stored
+//	nil, false, err   COULD NOT LOOK: unreadable or unparseable
+//
+// ⛔ LoadState MUST NOT be used for a decision that turns on ABSENCE. It returns
+// DefaultState() -- an EMPTY instance list -- for a missing file, an unreadable
+// file and an unparseable file alike, logs, and moves on. Every one of those
+// reads to the caller as "there are no sessions". A caller that treats an empty
+// list as "these were deleted" would erase every live session on a transient
+// read error, and nothing in the return value would say why.
+//
+// This is the same distinction the exit codes make: 0 is not 3.
+func InstancesOnDisk() (json.RawMessage, bool, error) {
+	configDir, err := GetConfigDir()
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to get config directory: %w", err)
+	}
+
+	statePath := filepath.Join(configDir, stateFileName())
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("failed to read %s: %w", statePath, err)
+	}
+
+	var state State
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, false, fmt.Errorf("failed to parse %s: %w", statePath, err)
+	}
+	return state.InstancesData, true, nil
+}

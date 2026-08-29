@@ -42,6 +42,28 @@ func Initialize(daemon bool) {
 	globalLogFile = f
 }
 
+// Infof and Warningf log without assuming Initialize has run.
+//
+// ⛔ InfoLog, WarningLog and ErrorLog are nil until Initialize sets them, and a
+// nil *log.Logger PANICS on Printf. The interface initialises logging at
+// startup; a test, a library caller or a CLI subcommand that forgot may not --
+// which is the nil-pointer segfault mid-teardown that kill.go's header records.
+//
+// A caller that must log should never have to know whether logging is up. These
+// drop the line when it is not, because a missing log line is not a reason to
+// take the program down.
+func Infof(format string, args ...any) {
+	if InfoLog != nil {
+		InfoLog.Printf(format, args...)
+	}
+}
+
+func Warningf(format string, args ...any) {
+	if WarningLog != nil {
+		WarningLog.Printf(format, args...)
+	}
+}
+
 func Close() {
 	_ = globalLogFile.Close()
 	// TODO: maybe only print if verbose flag is set?

@@ -16,6 +16,15 @@ const (
 	ConfigFileName = "config.json"
 	defaultProgram = "claude"
 
+	// DefaultInstanceLimit is the number of concurrent sessions allowed when
+	// instance_limit is absent or non-positive.
+	//
+	// Upstream hardcoded this as app.GlobalInstanceLimit. It was 16, and became
+	// 10 in f943343 ("ui: add spinners") as an incidental edit with no stated
+	// rationale -- nothing structural caps the count at ten: there are no digit
+	// keybindings, and ui/list.go already trims the prefix for two-digit indices.
+	DefaultInstanceLimit = 20
+
 	// ConfigDirEnvVar overrides the configuration directory. Set it to run
 	// independent instances side by side -- one per repository, say -- each with
 	// its own config.json and state.json.
@@ -86,6 +95,17 @@ type Config struct {
 	// `N` is untouched either way -- it already carries its own picker, and
 	// showing two would be worse than showing none.
 	ProfileOnNew bool `json:"profile_on_new,omitempty"`
+	// InstanceLimit is the maximum number of concurrent sessions the TUI will
+	// create. Enforcement is TUI-only; the `new` subcommand has never had a
+	// limit and still does not.
+	//
+	// ZERO AND ABSENT BOTH MEAN "USE THE DEFAULT", and that is deliberate. A
+	// config.json written by an older binary has no instance_limit key at all,
+	// so json.Unmarshal leaves this at 0 -- read literally that would cap the
+	// install at zero sessions and lock the user out of creating anything.
+	// GetInstanceLimit collapses both to DefaultInstanceLimit; the cost is that
+	// a limit of literally zero cannot be expressed, which nobody wants.
+	InstanceLimit int `json:"instance_limit,omitempty"`
 	// RepoRoots are directories to scan, one level deep, for git repositories
 	// that a new session may be created in.
 	//
@@ -129,6 +149,27 @@ func (c *Config) GetProfiles() []Profile {
 	return profiles
 }
 
+// GetInstanceLimit returns the configured concurrent-session cap, falling back
+// to DefaultInstanceLimit when the value is absent or non-positive. See the
+// InstanceLimit field for why zero is not taken literally.
+func (c *Config) GetInstanceLimit() int {
+	if c == nil || c.InstanceLimit <= 0 {
+		return DefaultInstanceLimit
+	}
+	return c.InstanceLimit
+}
+
+// ConfigPath returns the path of the config file actually in use, so an error
+// message can name the file the reader has to edit rather than assuming
+// $HOME/.claude-squad -- CLAUDE_SQUAD_DIR moves it.
+func ConfigPath() string {
+	dir, err := GetConfigDir()
+	if err != nil {
+		return ConfigFileName
+	}
+	return filepath.Join(dir, ConfigFileName)
+}
+
 // DefaultConfig returns the default configuration
 func DefaultConfig() *Config {
 	program, err := GetClaudeCommand()
@@ -141,6 +182,7 @@ func DefaultConfig() *Config {
 		DefaultProgram:     program,
 		AutoYes:            false,
 		DaemonPollInterval: 1000,
+		InstanceLimit:      DefaultInstanceLimit,
 		BranchPrefix: func() string {
 			user, err := user.Current()
 			if err != nil || user == nil || user.Username == "" {

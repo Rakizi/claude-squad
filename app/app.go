@@ -22,7 +22,24 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
-const GlobalInstanceLimit = 10
+// GlobalInstanceLimit is the session cap used when config.json does not set
+// instance_limit. It is an alias, not a second number -- config.DefaultInstanceLimit
+// is the single definition.
+const GlobalInstanceLimit = config.DefaultInstanceLimit
+
+// instanceLimitReached reports whether another session may be created, given the
+// number that already exist. Split out from the two call sites so the rule can be
+// tested without standing up a tmux session.
+func instanceLimitReached(cfg *config.Config, current int) bool {
+	return current >= cfg.GetInstanceLimit()
+}
+
+// instanceLimitError names both the number in force and the file to change it in.
+// A bare "you can't create more than 10" left the reader with nothing to act on.
+func instanceLimitError(cfg *config.Config) error {
+	return fmt.Errorf("you can't create more than %d instances (raise instance_limit in %s)",
+		cfg.GetInstanceLimit(), config.ConfigPath())
+}
 
 // Run is the main entrypoint into the application.
 func Run(ctx context.Context, program string, autoYes bool) error {
@@ -306,9 +323,8 @@ func (m *home) startNewInstance(repoPath string, promptAfter bool, program strin
 // otherwise creates immediately. An install with one repository never sees a
 // prompt whose answer is already decided.
 func (m *home) beginNewInstance(promptAfter bool) (tea.Model, tea.Cmd) {
-	if m.list.NumInstances() >= GlobalInstanceLimit {
-		return m, m.handleError(
-			fmt.Errorf("you can't create more than %d instances", GlobalInstanceLimit))
+	if instanceLimitReached(m.appConfig, m.list.NumInstances()) {
+		return m, m.handleError(instanceLimitError(m.appConfig))
 	}
 	if len(m.repos) > 1 {
 		m.repoPicker = overlay.NewRepoPicker(m.repos)
@@ -803,9 +819,8 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 	case keys.KeyHelp:
 		return m.showHelpScreen(helpTypeGeneral{}, nil)
 	case keys.KeyPrompt:
-		if m.list.NumInstances() >= GlobalInstanceLimit {
-			return m, m.handleError(
-				fmt.Errorf("you can't create more than %d instances", GlobalInstanceLimit))
+		if instanceLimitReached(m.appConfig, m.list.NumInstances()) {
+			return m, m.handleError(instanceLimitError(m.appConfig))
 		}
 
 		// The fetch cannot happen here: the repository has not been chosen yet.

@@ -2,13 +2,10 @@ package main
 
 import (
 	"claude-squad/app"
-	cmd2 "claude-squad/cmd"
 	"claude-squad/config"
 	"claude-squad/daemon"
 	"claude-squad/log"
-	"claude-squad/session"
 	"claude-squad/session/git"
-	"claude-squad/session/tmux"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -81,43 +78,6 @@ var (
 		},
 	}
 
-	resetCmd = &cobra.Command{
-		Use:   "reset",
-		Short: "Reset all stored instances",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			log.Initialize(false)
-			defer log.Close()
-
-			state := config.LoadState()
-			storage, err := session.NewStorage(state)
-			if err != nil {
-				return fmt.Errorf("failed to initialize storage: %w", err)
-			}
-			if err := storage.DeleteAllInstances(); err != nil {
-				return fmt.Errorf("failed to reset storage: %w", err)
-			}
-			fmt.Println("Storage has been reset successfully")
-
-			if err := tmux.CleanupSessions(cmd2.MakeExecutor()); err != nil {
-				return fmt.Errorf("failed to cleanup tmux sessions: %w", err)
-			}
-			fmt.Println("Tmux sessions have been cleaned up")
-
-			if err := git.CleanupWorktrees(); err != nil {
-				return fmt.Errorf("failed to cleanup worktrees: %w", err)
-			}
-			fmt.Println("Worktrees have been cleaned up")
-
-			// Kill any daemon that's running.
-			if err := daemon.StopDaemon(); err != nil {
-				return err
-			}
-			fmt.Println("daemon has been stopped")
-
-			return nil
-		},
-	}
-
 	debugCmd = &cobra.Command{
 		Use:   "debug",
 		Short: "Print debug information like config paths",
@@ -174,6 +134,9 @@ func init() {
 
 	killCmd.Flags().BoolVar(&killYes, "yes", false,
 		"Confirm removal. REQUIRED — this deletes the worktree and the branch.")
+
+	resetCmd.Flags().BoolVar(&resetYes, "yes", false,
+		"Confirm the reset. REQUIRED — without it the plan is printed and nothing is touched.")
 
 	rootCmd.AddCommand(newCmd)
 	rootCmd.AddCommand(killCmd)

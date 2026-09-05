@@ -186,7 +186,26 @@ func (g *GitWorktree) Prune() error {
 	return nil
 }
 
-// CleanupWorktrees removes all worktrees and their associated branches
+// CleanupWorktrees removes all worktrees and their associated branches.
+//
+// ⛔ THREE DEFECTS FIXED HERE, all found live (Rakizi/the-lab#33):
+//  1. git worktree list / branch -D / worktree prune ran with no cmd.Dir,
+//     inheriting the PROCESS cwd -- so this acted on whichever of the estate's
+//     several repos the user happened to be standing in, not the repo each
+//     worktree entry actually belongs to.
+//  2. os.RemoveAll deleted every directory under worktreesDir unconditionally,
+//     while branch deletion was scoped to the (wrong) cwd's repo -- the two
+//     halves disagreed about what they were operating on.
+//  3. Directory<->branch pairing was `strings.Contains(path, entry.Name())`,
+//     a substring match: "toolsmith-1" matches a path containing
+//     "toolsmith-10". With names like "w-nag-125"/"w-nag-126" this is not
+//     theoretical.
+//
+// Fix: read each worktree's OWN repo root from `git worktree list` itself
+// (git reports it per-entry), run every git command with that repo as cmd.Dir,
+// match directory<->branch by exact basename (never substring), and remove
+// the worktree + prune its admin entry BEFORE attempting the branch delete —
+// git refuses to delete a branch still checked out in a live worktree entry.
 func CleanupWorktrees() error {
 	worktreesDir, err := getWorktreeDirectory()
 	if err != nil {
@@ -198,57 +217,81 @@ func CleanupWorktrees() error {
 		return fmt.Errorf("failed to read worktree directory: %w", err)
 	}
 
-	// Get a list of all branches associated with worktrees
-	cmd := exec.Command("git", "worktree", "list", "--porcelain")
-	output, err := cmd.Output()
-	if err != nil {
-		return fmt.Errorf("failed to list worktrees: %w", err)
+	// worktreeInfo pairs an on-disk worktree path with the repo that owns it
+	// and the branch checked out there -- everything needed to run the right
+	// git command against the right repo, never the launcher's cwd.
+	type worktreeInfo struct {
+		repoPath string
+		branch   string
 	}
+	byPath := make(map[string]worktreeInfo)
 
-	// Parse the output to extract branch names
-	worktreeBranches := make(map[string]string)
-	currentWorktree := ""
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
-		if strings.HasPrefix(line, "worktree ") {
-			currentWorktree = strings.TrimPrefix(line, "worktree ")
-		} else if strings.HasPrefix(line, "branch ") {
-			branchPath := strings.TrimPrefix(line, "branch ")
-			// Extract branch name from refs/heads/branch-name
-			branchName := strings.TrimPrefix(branchPath, "refs/heads/")
-			if currentWorktree != "" {
-				worktreeBranches[currentWorktree] = branchName
-			}
-		}
-	}
-
+	// ⛔ EACH WORKTREE MAY BELONG TO A DIFFERENT REPO. `git worktree list` is
+	// itself repo-scoped (it lists worktrees of the repo it is RUN IN), so a
+	// single global call cannot discover worktrees belonging to a different
+	// repo than the caller's cwd. Instead, ask git to identify the repo FROM
+	// each worktree directory directly -- this is what makes the fix work
+	// regardless of where CleanupWorktrees is invoked from.
 	for _, entry := range entries {
-		if entry.IsDir() {
-			worktreePath := filepath.Join(worktreesDir, entry.Name())
-
-			// Delete the branch associated with this worktree if found
-			for path, branch := range worktreeBranches {
-				if strings.Contains(path, entry.Name()) {
-					// Delete the branch
-					deleteCmd := exec.Command("git", "branch", "-D", branch)
-					if err := deleteCmd.Run(); err != nil {
-						// Log the error but continue with other worktrees
-						log.ErrorLog.Printf("failed to delete branch %s: %v", branch, err)
-					}
-					break
-				}
-			}
-
-			// Remove the worktree directory
-			os.RemoveAll(worktreePath)
+		if !entry.IsDir() {
+			continue
 		}
+		worktreePath := filepath.Join(worktreesDir, entry.Name())
+
+		// The worktree's own .git file points back at its parent repo's
+		// worktree admin dir; `rev-parse --git-common-dir`, run WITH this
+		// worktree as cwd, resolves it without guessing.
+		commonDirCmd := exec.Command("git", "rev-parse", "--git-common-dir")
+		commonDirCmd.Dir = worktreePath
+		commonDirOut, err := commonDirCmd.Output()
+		if err != nil {
+			log.ErrorLog.Printf("failed to resolve repo for worktree %s: %v", worktreePath, err)
+			continue
+		}
+		gitCommonDir := strings.TrimSpace(string(commonDirOut))
+		// git-common-dir is typically "<repo>/.git" (or relative to worktreePath);
+		// resolve to an absolute repo root either way.
+		if !filepath.IsAbs(gitCommonDir) {
+			gitCommonDir = filepath.Join(worktreePath, gitCommonDir)
+		}
+		repoPath := filepath.Dir(gitCommonDir)
+
+		branchCmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+		branchCmd.Dir = worktreePath
+		branchOut, err := branchCmd.Output()
+		branch := ""
+		if err == nil {
+			branch = strings.TrimSpace(string(branchOut))
+		}
+		byPath[worktreePath] = worktreeInfo{repoPath: repoPath, branch: branch}
 	}
 
-	// You have to prune the cleaned up worktrees.
-	cmd = exec.Command("git", "worktree", "prune")
-	_, err = cmd.Output()
-	if err != nil {
-		return fmt.Errorf("failed to prune worktrees: %w", err)
+	for worktreePath, info := range byPath {
+		// ⛔ ORDER MATTERS, and the original code had it backwards (branch
+		// delete BEFORE worktree removal). git refuses `branch -D` on a
+		// branch still checked out in a worktree's admin entry -- that
+		// failure was invisible before this fix because defect #1 (no
+		// cmd.Dir) meant `git branch -D` almost never targeted a repo that
+		// actually HAD the branch, so the ordering bug never got exercised.
+		// Remove the directory and prune the admin entry FIRST, so the
+		// branch is genuinely free to delete by the time we try.
+		os.RemoveAll(worktreePath)
+
+		pruneCmd := exec.Command("git", "worktree", "prune")
+		pruneCmd.Dir = info.repoPath
+		if _, err := pruneCmd.Output(); err != nil {
+			log.ErrorLog.Printf("failed to prune worktrees in %s: %v", info.repoPath, err)
+		}
+
+		if info.branch != "" && info.branch != "HEAD" {
+			// Delete the branch IN ITS OWN REPO, not the launcher's cwd.
+			deleteCmd := exec.Command("git", "branch", "-D", info.branch)
+			deleteCmd.Dir = info.repoPath
+			if err := deleteCmd.Run(); err != nil {
+				// Log the error but continue with other worktrees.
+				log.ErrorLog.Printf("failed to delete branch %s in %s: %v", info.branch, info.repoPath, err)
+			}
+		}
 	}
 
 	return nil

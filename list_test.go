@@ -51,6 +51,7 @@ func TestInstanceViewJSON(t *testing.T) {
 		for _, field := range []string{
 			"title", "repo", "branch", "status", "worktree",
 			"tmux_session", "tmux_alive", "program", "created_at", "updated_at",
+			"local_only_commits",
 		} {
 			assert.Contains(t, got, field)
 		}

@@ -4,6 +4,7 @@ import (
 	"claude-squad/cmd"
 	"claude-squad/config"
 	"claude-squad/session"
+	"claude-squad/session/git"
 	"claude-squad/session/tmux"
 	"encoding/json"
 	"fmt"
@@ -46,10 +47,36 @@ type instanceView struct {
 	//:   unknown  unreadable for some OTHER reason. Per-ROW, because one bad
 	//:            path must not blind the whole listing the way an
 	//:            unreachable tmux rightly does.
-	WorktreeState string    `json:"worktree_state"`
-	Program       string    `json:"program"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	WorktreeState string `json:"worktree_state"`
+	//: LocalOnlyCommits is the number of commits on Branch that exist on NO
+	//: remote-tracking ref -- what `kill` (git branch -D) would destroy. It is
+	//: read from the main repository's refs, so it is answered for paused
+	//: sessions too. ⛔ null is NOT 0. null means it could not be counted --
+	//: the branch is gone, the repo is unreadable, no worktree was recorded --
+	//: and LocalOnlyError says why. A consumer testing `== 0` on null gets
+	//: false, which is the point: a blind count must never read as "safe".
+	LocalOnlyCommits *int      `json:"local_only_commits"`
+	LocalOnlyError   string    `json:"local_only_error,omitempty"`
+	Program          string    `json:"program"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+// localOnlyCommits answers "how many commits would a kill destroy" for one
+// stored entry, per ROW: one unreadable repo must not blind the whole listing.
+// The bool half is deliberate -- (nil, reason) is a third state, not a zero.
+func localOnlyCommits(d session.InstanceData) (*int, string) {
+	if d.Worktree.RepoPath == "" || d.Worktree.BranchName == "" {
+		return nil, "no repo or branch recorded in state"
+	}
+	wt := git.NewGitWorktreeFromStorage(
+		d.Worktree.RepoPath, d.Worktree.WorktreePath, d.Worktree.SessionName,
+		d.Worktree.BranchName, d.Worktree.BaseCommitSHA, d.Worktree.IsExistingBranch)
+	n, err := wt.LocalOnlyCommits()
+	if err != nil {
+		return nil, err.Error()
+	}
+	return &n, ""
 }
 
 func statusName(s session.Status) string {
@@ -147,19 +174,22 @@ func loadInstanceViews() ([]instanceView, error) {
 	for _, d := range stored {
 		sessionName := tmux.SessionName(d.Title)
 		_, isAlive := alive[sessionName]
+		localOnly, localOnlyErr := localOnlyCommits(d)
 		views = append(views, instanceView{
-			Title:         d.Title,
-			Repo:          d.Worktree.RepoPath,
-			Branch:        d.Branch,
-			Status:        statusName(d.Status),
-			Worktree:      d.Worktree.WorktreePath,
-			TmuxSession:   sessionName,
-			TmuxAlive:     isAlive,
-			Tmux:          tmuxState(d.Status, isAlive),
-			WorktreeState: worktreeState(d.Status, d.Worktree.WorktreePath),
-			Program:       d.Program,
-			CreatedAt:     d.CreatedAt,
-			UpdatedAt:     d.UpdatedAt,
+			Title:            d.Title,
+			Repo:             d.Worktree.RepoPath,
+			Branch:           d.Branch,
+			Status:           statusName(d.Status),
+			Worktree:         d.Worktree.WorktreePath,
+			TmuxSession:      sessionName,
+			TmuxAlive:        isAlive,
+			Tmux:             tmuxState(d.Status, isAlive),
+			WorktreeState:    worktreeState(d.Status, d.Worktree.WorktreePath),
+			LocalOnlyCommits: localOnly,
+			LocalOnlyError:   localOnlyErr,
+			Program:          d.Program,
+			CreatedAt:        d.CreatedAt,
+			UpdatedAt:        d.UpdatedAt,
 		})
 	}
 	return views, nil
@@ -167,9 +197,16 @@ func loadInstanceViews() ([]instanceView, error) {
 
 func renderInstanceTable(w io.Writer, views []instanceView) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "TITLE\tREPO\tBRANCH\tSTATUS\tTMUX\tWORKTREE")
+	fmt.Fprintln(tw, "TITLE\tREPO\tBRANCH\tSTATUS\tTMUX\tWORKTREE\tLOCAL-ONLY")
 	for _, v := range views {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", v.Title, v.Repo, v.Branch, v.Status, v.Tmux, v.WorktreeState)
+		// "?" for could-not-count, never a blank and never 0: the column exists
+		// so that an unpushed commit is visible before someone types kill.
+		localOnly := "?"
+		if v.LocalOnlyCommits != nil {
+			localOnly = fmt.Sprintf("%d", *v.LocalOnlyCommits)
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			v.Title, v.Repo, v.Branch, v.Status, v.Tmux, v.WorktreeState, localOnly)
 	}
 	_ = tw.Flush()
 }

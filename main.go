@@ -177,6 +177,8 @@ func init() {
 
 	rootCmd.AddCommand(newCmd)
 	rootCmd.AddCommand(killCmd)
+	rootCmd.AddCommand(pauseCmd)
+	rootCmd.AddCommand(resumeCmd)
 	rootCmd.AddCommand(lsCmd)
 
 	// Cobra prints the error itself unless silenced. main() now reports it too,

@@ -5,6 +5,8 @@ import (
 	"claude-squad/log"
 	"claude-squad/session"
 	"fmt"
+	"io"
+	"os"
 
 	"github.com/spf13/cobra"
 )
@@ -49,6 +51,22 @@ func pauseInstance(title string) error {
 		return refused("no session named %q. Sessions: %v", title, titles)
 	}
 
+	// ⛔ THE PRE-PAUSE PROOF (Rakizi/the-lab#30). Paused promises "resumable
+	// from the kept branch". If the branch is not there that promise is a lie
+	// and ⏸ is worse than nothing, so a missing branch is a refusal and a
+	// check that could not run is a refusal (exit 3) -- never a pass. A branch
+	// that exists but is reachable from no remote or tag is still pausable
+	// (nothing is destroyed; the branch is kept), but the ticket's words are
+	// "say plainly that resume may fail": the count goes to stderr so the
+	// one place the work exists is named before the worktree is removed.
+	wt, err := target.GetGitWorktree()
+	if err != nil {
+		return couldNotLook("no git worktree on %q: %v", title, err)
+	}
+	if err := prePauseProof(wt, title, os.Stderr); err != nil {
+		return err
+	}
+
 	if err := target.Pause(); err != nil {
 		return refused("failed to pause %q: %v", title, err)
 	}
@@ -65,6 +83,38 @@ func pauseInstance(title string) error {
 	return nil
 }
 
+// branchProver is the slice of GitWorktree the pause proof needs, so the
+// decision can be tested against a fake without a repository.
+type branchProver interface {
+	BranchExists() (bool, error)
+	CommitsOnNoRemoteOrTag() (int, error)
+	GetBranchName() string
+}
+
+// prePauseProof returns the reason NOT to pause, or nil. It writes the plain
+// warning about an unreachable branch to w -- that is not a refusal.
+func prePauseProof(wt branchProver, title string, w io.Writer) error {
+	exists, err := wt.BranchExists()
+	if err != nil {
+		return couldNotLook("could not check that branch %s exists: %v", wt.GetBranchName(), err)
+	}
+	if !exists {
+		return refused("branch %s does not exist, so a pause could never be resumed. Not pausing %q.",
+			wt.GetBranchName(), title)
+	}
+	n, err := wt.CommitsOnNoRemoteOrTag()
+	if err != nil {
+		return couldNotLook("could not count commits on %s reachable from no remote or tag: %v",
+			wt.GetBranchName(), err)
+	}
+	if n > 0 {
+		fmt.Fprintf(w, "%s\t⚠ %d commit(s) on %s are on NO remote or tag. The local branch is the only "+
+			"copy; if it is lost, resume will fail. Push or tag before relying on this pause.\n",
+			title, n, wt.GetBranchName())
+	}
+	return nil
+}
+
 var pauseCmd = &cobra.Command{
 	Use:   "pause <title>",
 	Short: "Pause a session without opening the interface",
@@ -77,13 +127,20 @@ kept branch and restarts (or reattaches) the tmux session.
 
   claude-squad pause my-task
 
+Before the worktree is removed the branch is PROVED to exist (a pause whose
+branch is gone could never be resumed, and is refused) and its commits are
+counted against every remote and tag. Commits on no remote or tag do not block
+the pause -- the branch is kept -- but are said plainly on stderr, because the
+local branch is then the only copy and resume depends on it surviving.
+
 Exit codes:
 
   0  paused
   1  bad arguments
-  2  refused -- no such title, or the pause failed (e.g. already paused,
-     dirty worktree that could not be committed)
-  3  could not look -- state could not be read, so nothing was touched`,
+  2  refused -- no such title, the branch does not exist, or the pause failed
+     (e.g. already paused, dirty worktree that could not be committed)
+  3  could not look -- state could not be read, or the branch could not be
+     checked, so nothing was touched`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(command *cobra.Command, args []string) error {
 		title := args[0]

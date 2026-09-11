@@ -26,6 +26,14 @@ const (
 	Loading
 	// Paused is if the instance is paused (worktree removed but branch preserved).
 	Paused
+	// Unknown is if the tmux session is absent for a reason that could not be
+	// determined: the server died, someone ran kill-session, the program crashed.
+	// The worktree and branch may still be on disk. It is deliberately NOT Paused:
+	// Paused means "torn down on purpose, resumable"; Unknown means "vanished, cause
+	// unmeasured". Collapsing the two hid dead sessions as parked ones
+	// (Rakizi/the-lab#30). Appended after Paused so stored integer values keep
+	// their meaning.
+	Unknown
 )
 
 // Instance is a running instance of claude code.
@@ -265,14 +273,17 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 	if !firstTimeSetup {
 		// Reuse existing session. If the tmux server died since we last ran (reboot,
 		// crash, `tmux kill-server`), the session is gone but the worktree and branch
-		// are still on disk. Park the instance as Paused so Resume can rebuild it.
+		// may still be on disk. Mark the instance Unknown -- NOT Paused. Paused is a
+		// deliberate, resumable state; this is an absence whose cause was never
+		// measured, and reporting it as Paused made a dead session look parked
+		// (Rakizi/the-lab#30). Resume accepts Unknown, so recovery is unchanged.
 		// Reporting an error here would be worse than useless: LoadInstances aborts on
 		// the first failure, so a single dead session would hide every other instance.
 		if err := tmuxSession.Restore(); err != nil {
 			if errors.Is(err, tmux.ErrSessionNotFound) {
 				log.WarningLog.Printf(
-					"tmux session for %q no longer exists; pausing instance so it can be resumed", i.Title)
-				i.SetStatus(Paused)
+					"tmux session for %q no longer exists; marking instance Unknown (resume to rebuild)", i.Title)
+				i.SetStatus(Unknown)
 				return nil
 			}
 			setupErr = fmt.Errorf("failed to restore existing session: %w", err)
@@ -345,7 +356,7 @@ func (i *Instance) combineErrors(errs []error) error {
 }
 
 func (i *Instance) Preview() (string, error) {
-	if !i.started || i.Status == Paused {
+	if !i.started || i.Dormant() {
 		return "", nil
 	}
 	return i.tmuxSession.CapturePaneContent()
@@ -390,7 +401,7 @@ func (i *Instance) Attach() (chan struct{}, error) {
 }
 
 func (i *Instance) SetPreviewSize(width, height int) error {
-	if !i.started || i.Status == Paused {
+	if !i.started || i.Dormant() {
 		return fmt.Errorf("cannot set preview size for instance that has not been started or " +
 			"is paused")
 	}
@@ -429,6 +440,19 @@ func (i *Instance) SetTitle(title string) error {
 
 func (i *Instance) Paused() bool {
 	return i.Status == Paused
+}
+
+// Unknown reports whether the tmux session vanished for an unmeasured reason.
+func (i *Instance) Unknown() bool {
+	return i.Status == Unknown
+}
+
+// Dormant reports whether the instance has no live tmux session BY STATE: either
+// Paused (torn down on purpose) or Unknown (vanished). Every tmux operation is
+// guarded on this rather than on Paused alone, so an Unknown instance is never
+// asked to capture, resize or receive keys on a session that is not there.
+func (i *Instance) Dormant() bool {
+	return i.Status == Paused || i.Status == Unknown
 }
 
 // TmuxAlive returns true if the tmux session is alive. This is a sanity check before attaching.
@@ -528,8 +552,8 @@ func (i *Instance) Resume() error {
 	if !i.started {
 		return fmt.Errorf("cannot resume instance that has not been started")
 	}
-	if i.Status != Paused {
-		return fmt.Errorf("can only resume paused instances")
+	if !i.Dormant() {
+		return fmt.Errorf("can only resume paused or unknown instances")
 	}
 
 	// Check if branch is checked out
@@ -668,7 +692,7 @@ func (i *Instance) SendPrompt(prompt string) error {
 
 // PreviewFullHistory captures the entire tmux pane output including full scrollback history
 func (i *Instance) PreviewFullHistory() (string, error) {
-	if !i.started || i.Status == Paused {
+	if !i.started || i.Dormant() {
 		return "", nil
 	}
 	return i.tmuxSession.CapturePaneContentWithOptions("-", "-")
@@ -681,7 +705,7 @@ func (i *Instance) SetTmuxSession(session *tmux.TmuxSession) {
 
 // SendKeys sends keys to the tmux session
 func (i *Instance) SendKeys(keys string) error {
-	if !i.started || i.Status == Paused {
+	if !i.started || i.Dormant() {
 		return fmt.Errorf("cannot send keys to instance that has not been started or is paused")
 	}
 	return i.tmuxSession.SendKeys(keys)

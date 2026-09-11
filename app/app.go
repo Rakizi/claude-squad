@@ -398,8 +398,8 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
 	case metadataUpdateDoneMsg:
 		for _, r := range msg.results {
-			// Skip instances that were paused while metadata was being computed
-			if r.instance.Status == session.Paused {
+			// Skip instances that went dormant while metadata was being computed
+			if r.instance.Dormant() {
 				continue
 			}
 			if r.updated {
@@ -424,7 +424,7 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Action == tea.MouseActionPress {
 			if msg.Button == tea.MouseButtonWheelDown || msg.Button == tea.MouseButtonWheelUp {
 				selected := m.list.GetSelectedInstance()
-				if selected == nil || selected.Status == session.Paused {
+				if selected == nil || selected.Dormant() {
 					return m, nil
 				}
 
@@ -527,7 +527,7 @@ func (m *home) handleMenuHighlighting(msg tea.KeyMsg) (cmd tea.Cmd, returnEarly 
 		return nil, false
 	}
 
-	if m.list.GetSelectedInstance() != nil && m.list.GetSelectedInstance().Paused() && name == keys.KeyEnter {
+	if m.list.GetSelectedInstance() != nil && m.list.GetSelectedInstance().Dormant() && name == keys.KeyEnter {
 		return nil, false
 	}
 	if name == keys.KeyShiftDown || name == keys.KeyShiftUp {
@@ -951,7 +951,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		selected := m.list.GetSelectedInstance()
-		if selected == nil || selected.Paused() || selected.Status == session.Loading || !selected.TmuxAlive() {
+		if selected == nil || selected.Dormant() || selected.Status == session.Loading || !selected.TmuxAlive() {
 			return m, nil
 		}
 		// Terminal tab: attach to terminal session
@@ -1126,7 +1126,7 @@ func runInstanceStartCmd(instance *session.Instance) tea.Cmd {
 func (m *home) snapshotActiveInstances() []*session.Instance {
 	var out []*session.Instance
 	for _, inst := range m.list.GetInstances() {
-		if inst.Started() && !inst.Paused() {
+		if inst.Started() && !inst.Dormant() {
 			out = append(out, inst)
 		}
 	}

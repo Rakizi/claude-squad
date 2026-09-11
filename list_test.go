@@ -20,6 +20,7 @@ func TestStatusName(t *testing.T) {
 		session.Ready:   "ready",
 		session.Loading: "loading",
 		session.Paused:  "paused",
+		session.Unknown: "unknown",
 	} {
 		assert.Equal(t, want, statusName(status))
 	}

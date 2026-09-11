@@ -62,6 +62,8 @@ func statusName(s session.Status) string {
 		return "loading"
 	case session.Paused:
 		return "paused"
+	case session.Unknown:
+		return "unknown"
 	default:
 		return fmt.Sprintf("unknown(%d)", int(s))
 	}

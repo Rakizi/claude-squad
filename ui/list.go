@@ -16,6 +16,11 @@ import (
 const readyIcon = "● "
 const pausedIcon = "⏸ "
 
+// unknownIcon marks a session whose tmux vanished for an unmeasured reason. It
+// is deliberately not the pause glyph: ⏸ says "parked on purpose", and showing
+// it for a dead session is what hid 23 of them (Rakizi/the-lab#30).
+const unknownIcon = "? "
+
 var readyStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.AdaptiveColor{Light: "#51bd73", Dark: "#51bd73"})
 
@@ -27,6 +32,9 @@ var removedLinesStyle = lipgloss.NewStyle().
 
 var pausedStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.AdaptiveColor{Light: "#888888", Dark: "#888888"})
+
+var unknownStyle = lipgloss.NewStyle().
+	Foreground(lipgloss.AdaptiveColor{Light: "#de613e", Dark: "#de613e"})
 
 var titleStyle = lipgloss.NewStyle().
 	Padding(1, 1, 0, 1).
@@ -86,7 +94,7 @@ func (l *List) SetSize(width, height int) {
 // width and height.
 func (l *List) SetSessionPreviewSize(width, height int) (err error) {
 	for i, item := range l.items {
-		if !item.Started() || item.Paused() {
+		if !item.Started() || item.Dormant() {
 			continue
 		}
 
@@ -136,6 +144,8 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, h
 		join = readyStyle.Render(readyIcon)
 	case session.Paused:
 		join = pausedStyle.Render(pausedIcon)
+	case session.Unknown:
+		join = unknownStyle.Render(unknownIcon)
 	default:
 	}
 

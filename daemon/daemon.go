@@ -47,7 +47,7 @@ func RunDaemon(cfg *config.Config) error {
 		for {
 			for _, instance := range instances {
 				// We only store started instances, but check anyway.
-				if instance.Started() && !instance.Paused() {
+				if instance.Started() && !instance.Dormant() {
 					if _, hasPrompt := instance.HasUpdated(); hasPrompt {
 						instance.TapEnter()
 						if err := instance.UpdateDiffStats(); err != nil {

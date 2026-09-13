@@ -17,6 +17,11 @@ type helpText interface {
 	// mask returns the bit mask for this help text. These are used to track which help screens
 	// have been seen in the config and app state.
 	mask() uint32
+	// actionKey returns an extra key (besides Enter) that proceeds a gating
+	// overlay for this help type -- e.g. "c" for checkout, so the key that
+	// opened the overlay also confirms it. Empty means Enter is the only
+	// key that proceeds. Ignored for non-gating help types.
+	actionKey() string
 }
 
 type helpTypeGeneral struct{}
@@ -138,6 +143,11 @@ func (h helpTypeInstanceCheckout) mask() uint32 {
 	return 1 << 3
 }
 
+func (h helpTypeGeneral) actionKey() string          { return "" }
+func (h helpTypeInstanceStart) actionKey() string    { return "" }
+func (h helpTypeInstanceAttach) actionKey() string   { return "" }
+func (h helpTypeInstanceCheckout) actionKey() string { return "c" }
+
 var (
 	titleStyle  = lipgloss.NewStyle().Bold(true).Underline(true).Foreground(lipgloss.Color("#7D56F4"))
 	headerStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#36CFC9"))
@@ -169,6 +179,15 @@ func (m *home) showHelpScreen(helpType helpText, onDismiss func()) (tea.Model, t
 
 		m.textOverlay = overlay.NewTextOverlay(content)
 		m.textOverlay.OnDismiss = onDismiss
+		// A help screen that carries an action (onDismiss != nil) gates: only
+		// Enter or the type's own action key proceeds, Esc/q cancel without
+		// running the action, and any other key leaves the overlay open. A
+		// screen with no callback (nil) has nothing to gate, so it keeps the
+		// original dismiss-on-any-key behaviour.
+		if onDismiss != nil {
+			m.textOverlay.Gating = true
+			m.textOverlay.ActionKey = helpType.actionKey()
+		}
 		m.state = stateHelp
 		return m, nil
 	}
@@ -182,7 +201,10 @@ func (m *home) showHelpScreen(helpType helpText, onDismiss func()) (tea.Model, t
 
 // handleHelpState handles key events when in help state
 func (m *home) handleHelpState(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Any key press will close the help overlay
+	// shouldClose only means the overlay is done being shown -- it says
+	// nothing about whether the underlying action ran. For a gating overlay,
+	// HandleKeyPress decides that itself and calls OnDismiss (proceed) or
+	// OnCancel (cancel) accordingly before returning true here.
 	shouldClose := m.textOverlay.HandleKeyPress(msg)
 	if shouldClose {
 		m.state = stateDefault

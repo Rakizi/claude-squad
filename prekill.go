@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"claude-squad/log"
 	"claude-squad/session"
+	"claude-squad/session/git"
 	"context"
 	"encoding/json"
 	"errors"
@@ -19,10 +20,14 @@ import (
 // (Rakizi/the-lab#30). Before the branch goes with `git branch -D`, two
 // independent measurements have to come back clean:
 //
-//  1. the repository's own refs: commits on the branch reachable from no
-//     remote-tracking ref (session/git.LocalOnlyCommits). Always runs; it is
-//     the only check that can answer for a paused session, whose worktree is
-//     gone by design.
+//  1. the repository's own refs, REFRESHED FIRST: commits on the branch
+//     reachable from no remote-tracking ref and no tag
+//     (session/git.CommitsOnNoRemoteOrTag after RefreshRemoteBranch). Always
+//     runs; it is the only check that can answer for a paused session, whose
+//     worktree is gone by design. The refresh matters: the tracking refs are
+//     a cache, and a branch pushed from elsewhere counted as unpushed here
+//     until something fetched (PR #3 review K1). A refresh that cannot run
+//     is a refusal, because a stale cache can also hide a remote-side delete.
 //  2. ops/bin/agent-trace, which also reads the transcript (files written
 //     outside the worktree, a decision nobody relayed). Runs when the worktree
 //     is on disk. Keyed on its STATE field, not its exit code: exit 1 also
@@ -87,8 +92,13 @@ func agentTracePath() (string, error) {
 // session. An error means COULD NOT LOOK: the tool is missing, timed out,
 // printed no JSON, produced no row for the title, or traced a different
 // worktree than the one state names (its lookup falls back to a substring
-// match, so "w-nag-30" can resolve to w-nag-307's tree).
+// match, so "w-nag-30" can resolve to w-nag-307's tree). A state entry that
+// records NO worktree path cannot have its row verified at all, so it is
+// refused rather than waved through -- the check is unconditional.
 func runAgentTrace(title, worktreePath string) (*traceRow, error) {
+	if worktreePath == "" {
+		return nil, fmt.Errorf("state records no worktree path for %q, so an agent-trace row cannot be verified as this session's", title)
+	}
 	tool, err := agentTracePath()
 	if err != nil {
 		return nil, err
@@ -119,7 +129,7 @@ func runAgentTrace(title, worktreePath string) (*traceRow, error) {
 		if r.Session != title {
 			continue
 		}
-		if r.Worktree != "" && worktreePath != "" && r.Worktree != worktreePath {
+		if r.Worktree != "" && r.Worktree != worktreePath {
 			return nil, fmt.Errorf("agent-trace traced %s, not this session's worktree %s",
 				r.Worktree, worktreePath)
 		}
@@ -148,15 +158,28 @@ func judgeTrace(row *traceRow, lookErr error) error {
 }
 
 // judgeLocalOnly turns the refs-based count into the kill decision. nil means
-// proceed. An error counting is a refusal: a blind count is not a zero.
+// proceed. An error counting is a refusal: a blind count is not a zero. The
+// count is CommitsOnNoRemoteOrTag, so the remedy printed here is one that
+// clears it: either a push or a tag makes the number drop.
 func judgeLocalOnly(n int, countErr error) error {
 	if countErr != nil {
 		return couldNotLook("could not count local-only commits: %v", countErr)
 	}
 	if n > 0 {
-		return refused("%d commit(s) on the branch exist on no remote. Push or tag them first.", n)
+		return refused("%d commit(s) on the branch exist on no remote and no tag. Push or tag them first.", n)
 	}
 	return nil
+}
+
+// freshLocalOnly refreshes the remote-tracking refs for the branch and then
+// counts. A refresh that fails is returned as the count's error, so the
+// caller's could-not-look path fires: the cached view may hide a push OR a
+// remote-side delete, and neither direction is safe to guess.
+func freshLocalOnly(wt *git.GitWorktree) (int, error) {
+	if err := wt.RefreshRemoteBranch(); err != nil {
+		return 0, err
+	}
+	return wt.CommitsOnNoRemoteOrTag()
 }
 
 // preKillProof is what killInstance runs before target.Kill(). It returns the
@@ -167,13 +190,16 @@ func preKillProof(target *session.Instance, title, worktreePath string) error {
 	if err != nil {
 		return couldNotLook("no git worktree on %q: %v", title, err)
 	}
-	if err := judgeLocalOnly(wt.LocalOnlyCommits()); err != nil {
+	if err := judgeLocalOnly(freshLocalOnly(wt)); err != nil {
 		return err
 	}
 
 	// A paused session has no worktree on disk by design; agent-trace reads
 	// nothing without one. The refs count above already answered for it, so
-	// its blindness here is expected rather than a failed check.
+	// its blindness here is expected rather than a failed check. An EMPTY
+	// recorded path is not that case: it falls through to runAgentTrace,
+	// which refuses it, because a row could not be verified as this
+	// session's.
 	if worktreePath != "" {
 		if _, statErr := os.Stat(worktreePath); statErr != nil && os.IsNotExist(statErr) {
 			return nil

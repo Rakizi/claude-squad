@@ -89,6 +89,7 @@ func TestJudgeLocalOnly(t *testing.T) {
 	err := judgeLocalOnly(1, nil)
 	require.Error(t, err, "one unpushed commit MUST refuse")
 	assert.Equal(t, exitRefused, exitCodeFor(err))
+	assert.Contains(t, err.Error(), "no remote and no tag")
 
 	err = judgeLocalOnly(0, errors.New("not a git repository"))
 	require.Error(t, err, "a count that could not run MUST refuse, even though n is 0")
@@ -134,6 +135,26 @@ func TestRunAgentTrace(t *testing.T) {
 		_, err := runAgentTrace("w-x-1", wt)
 		require.Error(t, err)
 	})
+
+	t.Run("a row for a DIFFERENT session title is not this session's row", func(t *testing.T) {
+		// The other half of the lookup (PR #3 review N3): the worktree check
+		// alone cannot catch a row whose worktree matches but whose title does
+		// not, which is what a hand-edited or duplicated state entry produces.
+		fakeAgentTrace(t, `{"sessions": [{"session": "w-x-2", "worktree": "`+wt+`", "state": "LANDED"}]}`, 0)
+		_, err := runAgentTrace("w-x-1", wt)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no row for")
+	})
+
+	t.Run("an EMPTY recorded worktree path is refused before the tool runs", func(t *testing.T) {
+		// PR #3 review N1: with no recorded path the equality check had
+		// nothing to compare against and waved any row through. The check
+		// is unconditional now: no path, no verification, no kill.
+		fakeAgentTrace(t, row("LANDED", "/anything/at/all"), 0)
+		_, err := runAgentTrace("w-x-1", "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no worktree path")
+	})
 }
 
 func TestRecordForcedKill(t *testing.T) {
@@ -173,10 +194,15 @@ func killRepo(t *testing.T) (repo string, push func()) {
 	return repo, func() { gitq(t, repo, "push", "-q", "origin", "feat") }
 }
 
-func gitq(t *testing.T, dir string, args ...string) {
-	t.Helper()
+func gitCmd(dir string, args ...string) *exec.Cmd {
 	c := exec.Command("git", args...)
 	c.Dir = dir
+	return c
+}
+
+func gitq(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	c := gitCmd(dir, args...)
 	if out, err := c.CombinedOutput(); err != nil {
 		t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
 	}
@@ -246,5 +272,52 @@ func TestPreKillProof(t *testing.T) {
 	t.Run("pushed + worktree present + LANDED: allowed -- the positive control", func(t *testing.T) {
 		fakeAgentTrace(t, row("LANDED", present), 0)
 		assert.NoError(t, preKillProof(pausedTarget(t, repo, present), "w-x-1", present))
+	})
+
+	t.Run("an empty recorded worktree path is exit 3 even with a LANDED row", func(t *testing.T) {
+		fakeAgentTrace(t, row("LANDED", ""), 0)
+		err := preKillProof(pausedTarget(t, repo, ""), "w-x-1", "")
+		require.Error(t, err)
+		assert.Equal(t, exitCouldNotLook, exitCodeFor(err))
+	})
+}
+
+// The remedy the refusal prints must clear the refusal. "Push OR TAG them
+// first" -- so a tag, with nothing pushed, must turn exit 2 into a pass.
+func TestPreKillProofTagIsAHarbour(t *testing.T) {
+	initTestLog(t)
+	repo, _ := killRepo(t)
+	gone := filepath.Join(t.TempDir(), "worktree-that-was-removed")
+	t.Setenv(agentTraceEnv, filepath.Join(t.TempDir(), "must-not-run"))
+
+	err := preKillProof(pausedTarget(t, repo, gone), "w-x-1", gone)
+	require.Error(t, err, "control: untagged, unpushed commits must refuse")
+	assert.Equal(t, exitRefused, exitCodeFor(err))
+	assert.Contains(t, err.Error(), "Push or tag")
+
+	gitq(t, repo, "tag", "keep-w-x-1", "refs/heads/feat")
+	assert.NoError(t, preKillProof(pausedTarget(t, repo, gone), "w-x-1", gone),
+		"the operator did exactly what the message said; the refusal must clear")
+}
+
+// The refs count is taken against a REFRESHED view. A branch pushed from
+// elsewhere -- present on the remote, unknown to this clone -- must not be
+// refused as unpushed (PR #3 review K1).
+func TestPreKillProofRefreshesBeforeCounting(t *testing.T) {
+	initTestLog(t)
+	repo, push := killRepo(t)
+	gone := filepath.Join(t.TempDir(), "worktree-that-was-removed")
+	t.Setenv(agentTraceEnv, filepath.Join(t.TempDir(), "must-not-run"))
+
+	push()
+	gitq(t, repo, "update-ref", "-d", "refs/remotes/origin/feat") // this clone never fetched it
+	assert.NoError(t, preKillProof(pausedTarget(t, repo, gone), "w-x-1", gone),
+		"the work is on the remote; a stale tracking cache must not refuse it")
+
+	t.Run("a remote that cannot be reached is exit 3, not a stale-cache pass", func(t *testing.T) {
+		gitq(t, repo, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "gone.git"))
+		err := preKillProof(pausedTarget(t, repo, gone), "w-x-1", gone)
+		require.Error(t, err)
+		assert.Equal(t, exitCouldNotLook, exitCodeFor(err))
 	})
 }

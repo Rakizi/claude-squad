@@ -48,13 +48,18 @@ type instanceView struct {
 	//:            path must not blind the whole listing the way an
 	//:            unreachable tmux rightly does.
 	WorktreeState string `json:"worktree_state"`
-	//: LocalOnlyCommits is the number of commits on Branch that exist on NO
-	//: remote-tracking ref -- what `kill` (git branch -D) would destroy. It is
-	//: read from the main repository's refs, so it is answered for paused
-	//: sessions too. ⛔ null is NOT 0. null means it could not be counted --
-	//: the branch is gone, the repo is unreadable, no worktree was recorded --
-	//: and LocalOnlyError says why. A consumer testing `== 0` on null gets
-	//: false, which is the point: a blind count must never read as "safe".
+	//: LocalOnlyCommits is the number of commits on Branch reachable from NO
+	//: remote-tracking ref and NO tag -- what `kill` (git branch -D) would
+	//: make unreachable. It is read from the main repository's refs, so it is
+	//: answered for paused sessions too. ⛔ null is NOT 0. null means it could
+	//: not be counted -- the branch is gone, the repo is unreadable, no
+	//: worktree was recorded -- and LocalOnlyError says why. A consumer
+	//: testing `== 0` on null gets false, which is the point: a blind count
+	//: must never read as "safe".
+	//: ⚠ It is the LOCAL VIEW of the remotes: `ls` modifies nothing, so it
+	//: does not fetch. `kill` refreshes before it counts, so its number can
+	//: differ from this one when something was pushed or deleted elsewhere
+	//: since the last fetch.
 	LocalOnlyCommits *int      `json:"local_only_commits"`
 	LocalOnlyError   string    `json:"local_only_error,omitempty"`
 	Program          string    `json:"program"`
@@ -72,7 +77,7 @@ func localOnlyCommits(d session.InstanceData) (*int, string) {
 	wt := git.NewGitWorktreeFromStorage(
 		d.Worktree.RepoPath, d.Worktree.WorktreePath, d.Worktree.SessionName,
 		d.Worktree.BranchName, d.Worktree.BaseCommitSHA, d.Worktree.IsExistingBranch)
-	n, err := wt.LocalOnlyCommits()
+	n, err := wt.CommitsOnNoRemoteOrTag()
 	if err != nil {
 		return nil, err.Error()
 	}

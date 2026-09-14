@@ -92,3 +92,51 @@ func TestStartRestoresInstanceWhenTmuxSessionSurvives(t *testing.T) {
 	require.Equal(t, Running, instance.Status)
 	require.Equal(t, 1, ptyFactory.calls)
 }
+
+// Resume must accept an Unknown instance: that is the recovery path for a
+// session whose tmux vanished, and it is the mutation both reviewers found
+// green -- `if i.Status != Paused` in Resume() left the suite passing.
+func TestResumeAcceptsUnknown(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	gitq(t, root, "init", "-q", "-b", "main", repo)
+	gitq(t, repo, "config", "user.email", "t@t")
+	gitq(t, repo, "config", "user.name", "t")
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "a"), []byte("a\n"), 0644))
+	gitq(t, repo, "add", "a")
+	gitq(t, repo, "commit", "-qm", "base")
+	gitq(t, repo, "branch", "feat")
+	worktree := filepath.Join(root, "wt")
+	gitq(t, repo, "worktree", "add", "-q", worktree, "feat") // still on disk: the tmux-died shape
+
+	build := func(status Status) *Instance {
+		// Paused loads without touching tmux; then the mocked session and the
+		// status under test are set, so only Resume's gate differs between
+		// the two cases.
+		inst, err := FromInstanceData(InstanceData{
+			Title: "vanished", Status: Paused, Program: "claude", Branch: "feat",
+			Worktree: GitWorktreeData{RepoPath: repo, WorktreePath: worktree, BranchName: "feat", SessionName: "vanished"},
+		})
+		require.NoError(t, err)
+		inst.SetTmuxSession(tmux.NewTmuxSessionWithDeps("vanished", "claude", &nullPtyFactory{t: t},
+			cmd_test.MockCmdExec{RunFunc: func(*exec.Cmd) error { return nil }}))
+		inst.SetStatus(status)
+		return inst
+	}
+
+	inst := build(Unknown)
+	require.NoError(t, inst.Resume(), "Unknown is resumable: the worktree is on disk and tmux is rebuilt")
+	require.Equal(t, Running, inst.Status)
+
+	// Control: the gate still refuses a Running instance.
+	require.Error(t, build(Running).Resume())
+}
+
+func gitq(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	c := exec.Command("git", args...)
+	c.Dir = dir
+	if out, err := c.CombinedOutput(); err != nil {
+		t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
+	}
+}

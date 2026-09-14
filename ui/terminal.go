@@ -78,6 +78,10 @@ func (t *TerminalPane) UpdateContent(instance *session.Instance) error {
 		t.setFallbackState("Select an instance to open a terminal")
 		return nil
 	}
+	if instance.Status == session.Unknown {
+		t.setFallbackState("tmux session is gone (cause unknown). Resume to rebuild it.")
+		return nil
+	}
 	if instance.Status == session.Paused {
 		t.setFallbackState("Session is paused. Resume to use terminal.")
 		return nil
@@ -123,7 +127,7 @@ func (t *TerminalPane) ensureSession(instance *session.Instance) error {
 // ensureSessionLocked is the lock-free implementation of ensureSession.
 // Caller must hold t.mu.
 func (t *TerminalPane) ensureSessionLocked(instance *session.Instance) error {
-	if instance == nil || !instance.Started() || instance.Status == session.Paused {
+	if instance == nil || !instance.Started() || instance.Dormant() {
 		return nil
 	}
 

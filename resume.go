@@ -9,9 +9,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// resumeInstance resumes one paused session the way the interface's Resume
-// key does: recreates the worktree from the kept branch, restarts (or
-// reattaches) the tmux session, and persists the resulting Running status.
+// resumeInstance resumes one dormant session -- Paused on purpose, or Unknown
+// because its tmux session vanished -- the way the interface's Resume key
+// does: recreates the worktree from the kept branch if it is gone, restarts
+// (or reattaches) the tmux session, and persists the resulting Running status.
 func resumeInstance(title string) error {
 	log.Initialize(false)
 	defer log.Close()
@@ -59,13 +60,16 @@ func resumeInstance(title string) error {
 
 var resumeCmd = &cobra.Command{
 	Use:   "resume <title>",
-	Short: "Resume a paused session without opening the interface",
-	Long: `Resume a paused session without opening the interface.
+	Short: "Resume a paused or unknown session without opening the interface",
+	Long: `Resume a paused or unknown session without opening the interface.
 
-Recreates the git worktree from the branch a prior 'claude-squad pause' kept,
-and restarts (or reattaches, if the tmux session somehow survived) the
-session -- the same thing the interface's Resume key does. Only works on a
-session that is actually Paused; resuming a running session is refused.
+Recreates the git worktree from the branch a prior 'claude-squad pause' kept
+(or leaves it alone if it is still on disk), and restarts (or reattaches, if
+the tmux session somehow survived) the session -- the same thing the
+interface's Resume key does. Works on a session that is Paused, and on one
+whose status is Unknown because its tmux session vanished (server died,
+killed, crashed) -- that is the recovery path for it. Resuming a running
+session is refused.
 
   claude-squad resume my-task
 
@@ -73,8 +77,9 @@ Exit codes:
 
   0  resumed
   1  bad arguments
-  2  refused -- no such title, not paused, or the resume failed (e.g. branch
-     is checked out elsewhere and must be switched away from first)
+  2  refused -- no such title, neither paused nor unknown, or the resume
+     failed (e.g. branch is checked out elsewhere and must be switched away
+     from first)
   3  could not look -- state could not be read, so nothing was touched`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(command *cobra.Command, args []string) error {

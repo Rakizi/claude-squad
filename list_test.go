@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	"claude-squad/session"
@@ -20,6 +21,7 @@ func TestStatusName(t *testing.T) {
 		session.Ready:   "ready",
 		session.Loading: "loading",
 		session.Paused:  "paused",
+		session.Unknown: "unknown",
 	} {
 		assert.Equal(t, want, statusName(status))
 	}
@@ -50,6 +52,7 @@ func TestInstanceViewJSON(t *testing.T) {
 		for _, field := range []string{
 			"title", "repo", "branch", "status", "worktree",
 			"tmux_session", "tmux_alive", "program", "created_at", "updated_at",
+			"local_only_commits",
 		} {
 			assert.Contains(t, got, field)
 		}
@@ -187,4 +190,57 @@ func TestWorktreeState(t *testing.T) {
 		}
 		assert.Len(t, got, 3, "present, missing and n/a must stay distinct")
 	})
+}
+
+// The field's whole design note says null is not 0. These are the tests that
+// go red if a blind count ever becomes a confident 0 (PR #3 review, all three
+// CHANGES_REQUESTED verdicts named this gap).
+func TestLocalOnlyCommitsView(t *testing.T) {
+	t.Run("no repo recorded: null, with a reason", func(t *testing.T) {
+		n, reason := localOnlyCommits(session.InstanceData{Title: "bare"})
+		assert.Nil(t, n)
+		assert.Contains(t, reason, "no repo or branch")
+	})
+
+	t.Run("unreadable repo: null, with the git error -- NEVER 0", func(t *testing.T) {
+		n, reason := localOnlyCommits(session.InstanceData{
+			Title:    "blind",
+			Worktree: session.GitWorktreeData{RepoPath: t.TempDir(), BranchName: "feat"},
+		})
+		assert.Nil(t, n, "a count that could not run must be null, not a number")
+		assert.NotEmpty(t, reason)
+	})
+
+	t.Run("a real repo counts: the positive control", func(t *testing.T) {
+		repo, push := killRepo(t)
+		d := session.InstanceData{Title: "real", Worktree: session.GitWorktreeData{RepoPath: repo, BranchName: "feat"}}
+		n, reason := localOnlyCommits(d)
+		require.NotNil(t, n)
+		assert.Equal(t, 2, *n)
+		assert.Empty(t, reason)
+		push()
+		n, _ = localOnlyCommits(d)
+		require.NotNil(t, n)
+		assert.Equal(t, 0, *n)
+	})
+}
+
+func TestRenderInstanceTableLocalOnly(t *testing.T) {
+	two := 2
+	var buf bytes.Buffer
+	renderInstanceTable(&buf, []instanceView{
+		{Title: "counted", LocalOnlyCommits: &two},
+		{Title: "blind"},
+	})
+	out := buf.String()
+	assert.Contains(t, out, "LOCAL-ONLY", "the column exists so the number is seen before someone types kill")
+	for _, line := range strings.Split(out, "\n") {
+		switch {
+		case strings.HasPrefix(line, "counted"):
+			assert.Contains(t, line, "2")
+		case strings.HasPrefix(line, "blind"):
+			assert.Contains(t, line, "?", "a blind count renders as ?")
+			assert.NotContains(t, line, "0", "a blind count must never render as 0")
+		}
+	}
 }

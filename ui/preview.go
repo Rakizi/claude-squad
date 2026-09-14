@@ -58,6 +58,22 @@ func (p *PreviewPane) UpdateContent(instance *session.Instance) error {
 	case instance.Status == session.Loading:
 		p.setFallbackState("Setting up workspace...")
 		return nil
+	case instance.Status == session.Unknown:
+		p.setFallbackState(lipgloss.JoinVertical(lipgloss.Center,
+			"tmux session is GONE and the cause is unknown (server died? killed?).",
+			"The worktree and branch may still be on disk. Press 'r' to resume.",
+			"",
+			lipgloss.NewStyle().
+				Foreground(lipgloss.AdaptiveColor{
+					Light: "#de613e",
+					Dark:  "#de613e",
+				}).
+				Render(fmt.Sprintf(
+					"Branch: %s",
+					instance.Branch,
+				)),
+		))
+		return nil
 	case instance.Status == session.Paused:
 		p.setFallbackState(lipgloss.JoinVertical(lipgloss.Center,
 			"Session is paused. Press 'r' to resume.",
@@ -184,7 +200,7 @@ func (p *PreviewPane) String() string {
 
 // ScrollUp scrolls up in the viewport
 func (p *PreviewPane) ScrollUp(instance *session.Instance) error {
-	if instance == nil || instance.Status == session.Paused {
+	if instance == nil || instance.Dormant() {
 		return nil
 	}
 
@@ -217,7 +233,7 @@ func (p *PreviewPane) ScrollUp(instance *session.Instance) error {
 
 // ScrollDown scrolls down in the viewport
 func (p *PreviewPane) ScrollDown(instance *session.Instance) error {
-	if instance == nil || instance.Status == session.Paused {
+	if instance == nil || instance.Dormant() {
 		return nil
 	}
 
@@ -250,7 +266,7 @@ func (p *PreviewPane) ScrollDown(instance *session.Instance) error {
 
 // ResetToNormalMode exits scroll mode and returns to normal mode
 func (p *PreviewPane) ResetToNormalMode(instance *session.Instance) error {
-	if instance == nil || instance.Status == session.Paused {
+	if instance == nil || instance.Dormant() {
 		return nil
 	}
 

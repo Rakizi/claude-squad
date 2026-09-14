@@ -171,6 +171,9 @@ func init() {
 		"Literal command to run in the session. Conflicts with --profile.")
 	newCmd.Flags().StringVar(&newProfile, "profile", "",
 		"Name of a configured profile to run. Conflicts with --program.")
+	newCmd.Flags().StringVar(&newBranch, "branch", "",
+		"Start the session on this EXISTING branch instead of cutting a new one. "+
+			"Use to re-dispatch a worker onto a branch whose prior session was reaped.")
 
 	killCmd.Flags().BoolVar(&killYes, "yes", false,
 		"Confirm removal. REQUIRED — this deletes the worktree and the branch.")

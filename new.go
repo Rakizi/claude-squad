@@ -18,6 +18,7 @@ var (
 	newRepo    string
 	newProgram string
 	newProfile string
+	newBranch  string
 )
 
 // resolveProgram decides what command a new session runs.
@@ -112,11 +113,18 @@ session in state so the interface lists it the next time it reads state.
   claude-squad new my-task --repo ../other-repo
   claude-squad new my-task --program "aider"
   claude-squad new my-task --profile review
+  claude-squad new my-task --branch rakizi/w-nag-720
 
 --profile names an entry in the profiles list in config; --program is a
 literal command. They set the same thing, so passing both is refused. With
 neither, default_program is used -- and note that it is matched against a
 profile NAME first, so a profile's flags come along with it.
+
+--branch starts the session on an EXISTING branch (local or origin-only)
+instead of cutting a fresh one from the base ref. Use this to re-dispatch a
+worker onto a branch whose original session was already reaped -- the new
+session picks up exactly where that branch's last commit left off, rather
+than starting the issue over from scratch.
 
 Talk to the session afterwards without the interface:
 
@@ -205,6 +213,7 @@ Exit codes:
 			Title:   title,
 			Path:    repo,
 			Program: program,
+			Branch:  newBranch,
 		})
 		if err != nil {
 			return err

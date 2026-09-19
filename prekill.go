@@ -138,23 +138,34 @@ func runAgentTrace(title, worktreePath string) (*traceRow, error) {
 	return nil, fmt.Errorf("agent-trace produced no row for %q", title)
 }
 
+// traceProceedStates are the agent-trace states a kill may proceed on. The
+// vocabulary is CLOSED: a state this build does not know -- an empty one, a
+// renamed one, one from a different agent-trace earlier on PATH -- is a
+// could-not-look, never a pass. Without this list the switch below fell
+// through to "proceed" on any unrecognised word, in front of `git branch -D`
+// (PR #3 review 5194349086 §4).
+var traceProceedStates = map[string]bool{"LANDED": true, "UNFINISHED": true, "DECISION_UNRELAYED": true}
+
 // judgeTrace turns an agent-trace row (or the failure to get one) into the kill
 // decision. nil means proceed.
 func judgeTrace(row *traceRow, lookErr error) error {
 	if lookErr != nil {
 		return couldNotLook("pre-kill check could not run: %v", lookErr)
 	}
-	switch row.State {
-	case traceLocalOnlyWork:
+	switch {
+	case row.State == traceLocalOnlyWork:
 		return refused("agent-trace: %s -- %s", row.State, row.Verdict)
-	case traceCannotTell:
+	case row.State == traceCannotTell:
 		blind := strings.Join(row.Blind, "; ")
 		if blind == "" {
 			blind = row.Verdict
 		}
 		return couldNotLook("agent-trace could not tell whether a kill loses work: %s", blind)
+	case traceProceedStates[row.State]:
+		return nil
+	default:
+		return couldNotLook("agent-trace reported state %q, which this build does not know; not proceeding on it", row.State)
 	}
-	return nil
 }
 
 // judgeLocalOnly turns the refs-based count into the kill decision. nil means

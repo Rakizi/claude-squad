@@ -81,6 +81,19 @@ func TestJudgeTrace(t *testing.T) {
 		b := exitCodeFor(judgeTrace(&traceRow{State: traceCannotTell}, nil))
 		assert.NotEqual(t, a, b)
 	})
+
+	t.Run("a state this build does not know is exit 3, never a pass", func(t *testing.T) {
+		// ⛔ FAIL CLOSED. The switch used to fall through to "proceed" on any
+		// unrecognised word -- an empty state, a renamed one, a different
+		// agent-trace earlier on PATH -- in front of `git branch -D`
+		// (review 5194349086 §4).
+		for _, state := range []string{"", "SOME_NEW_STATE", "DIRTY_WORKTREE"} {
+			err := judgeTrace(&traceRow{State: state}, nil)
+			require.Error(t, err, "state %q must not proceed", state)
+			assert.Equal(t, exitCouldNotLook, exitCodeFor(err))
+			assert.Contains(t, err.Error(), "does not know")
+		}
+	})
 }
 
 func TestJudgeLocalOnly(t *testing.T) {

@@ -206,8 +206,10 @@ dangerous, not less. There is no undo: the branch goes with git branch -D.
 teardown, two measurements must come back clean or the kill is REFUSED with
 nothing removed:
 
-  · the branch's commits reachable from no remote (git rev-list --not --remotes)
-    must be 0 -- and a count that could not run is a refusal, not a zero
+  · the branch's commits reachable from no remote and no tag
+    (git rev-list --not --remotes --tags, after refreshing the remote-tracking
+    ref) must be 0 -- a tag is as good a harbour as a push, and a count or a
+    refresh that could not run is a refusal, not a zero
   · agent-trace <title> --json must not report LOCAL_ONLY_WORK (exit 2) or
     CANNOT_TELL (exit 3); a tool that is missing, hangs or prints no JSON is
     exit 3. Its other states (LANDED, UNFINISHED, DECISION_UNRELAYED) proceed.

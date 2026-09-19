@@ -26,12 +26,12 @@ import (
 // two runs cannot collide, and CLAUDE_SQUAD_DIR is a scratch directory so the
 // real state.json is never read or written.
 
-// storeEntry writes one InstanceData as the whole stored state and returns
-// a reader for what is on disk afterwards.
-func storeEntry(t *testing.T, d session.InstanceData) (stored func() []session.InstanceData) {
+// storeEntries writes the given InstanceData as the whole stored state and
+// returns a reader for what is on disk afterwards.
+func storeEntries(t *testing.T, ds ...session.InstanceData) (stored func() []session.InstanceData) {
 	t.Helper()
 	t.Setenv(config.ConfigDirEnvVar, t.TempDir())
-	raw, err := json.Marshal([]session.InstanceData{d})
+	raw, err := json.Marshal(ds)
 	require.NoError(t, err)
 	require.NoError(t, config.LoadState().SaveInstances(raw))
 	return func() []session.InstanceData {
@@ -62,7 +62,21 @@ func TestKillInstanceWiring(t *testing.T) {
 		Title: title, Status: session.Paused, Program: "true", Branch: "feat",
 		Worktree: session.GitWorktreeData{RepoPath: repo, WorktreePath: gone, BranchName: "feat", SessionName: title},
 	}
-	stored := storeEntry(t, entry)
+	// ⛔ THE DISCRIMINATION CONTROL the ticket mandates: a second, untouched
+	// entry that must SURVIVE the kill. "A prune that deleted everything
+	// passes the first assertion alone" (Rakizi/the-lab#30; review
+	// 5194349086 §3 found exactly that mutant surviving).
+	bystander := entry
+	bystander.Title = title + "-bystander"
+	bystander.Worktree.SessionName = bystander.Title
+	stored := storeEntries(t, entry, bystander)
+	titles := func() []string {
+		var out []string
+		for _, d := range stored() {
+			out = append(out, d.Title)
+		}
+		return out
+	}
 
 	// Through the cobra RunE, not killInstance directly, so the flag-to-call
 	// wiring (`killInstance(command, title, killForce)`) is on the tested
@@ -78,7 +92,7 @@ func TestKillInstanceWiring(t *testing.T) {
 		require.Error(t, err)
 		assert.Equal(t, exitRefused, exitCodeFor(err))
 		assert.NotContains(t, out, "removed")
-		assert.Len(t, stored(), 1, "a refusal must remove nothing from state")
+		assert.ElementsMatch(t, []string{title, bystander.Title}, titles(), "a refusal must remove nothing from state")
 		gitq(t, repo, "show-ref", "--verify", "--quiet", "refs/heads/feat")
 	})
 
@@ -89,7 +103,8 @@ func TestKillInstanceWiring(t *testing.T) {
 		require.NoError(t, err)
 		assert.Contains(t, out, title+"\tremoved\tFORCED past exit 2")
 		assert.Contains(t, out, "2 commit(s)")
-		assert.Empty(t, stored(), "a forced kill removes the entry")
+		assert.Equal(t, []string{bystander.Title}, titles(),
+			"the killed entry is ABSENT and the untouched one is PRESENT")
 		if ok, _ := gitBranchExists(repo, "feat"); ok {
 			t.Fatal("a forced kill must delete the branch, or the kill did not happen")
 		}
@@ -129,7 +144,7 @@ func TestPauseInstanceWiring(t *testing.T) {
 		// proof runs before Pause() and must refuse, leaving the stored
 		// status as it was (a refusal persists nothing).
 		title := fmt.Sprintf("cs3-wiring-pause-missing-%d", os.Getpid())
-		stored := storeEntry(t, session.InstanceData{
+		stored := storeEntries(t, session.InstanceData{
 			Title: title, Status: session.Running, Program: "true", Branch: "no-such-branch",
 			Worktree: session.GitWorktreeData{RepoPath: repo, WorktreePath: gone, BranchName: "no-such-branch", SessionName: title},
 		})
@@ -142,7 +157,7 @@ func TestPauseInstanceWiring(t *testing.T) {
 
 	t.Run("branch present: paused, stored status is Paused -- the positive control", func(t *testing.T) {
 		title := fmt.Sprintf("cs3-wiring-pause-ok-%d", os.Getpid())
-		stored := storeEntry(t, session.InstanceData{
+		stored := storeEntries(t, session.InstanceData{
 			Title: title, Status: session.Running, Program: "true", Branch: "feat",
 			Worktree: session.GitWorktreeData{RepoPath: repo, WorktreePath: gone, BranchName: "feat", SessionName: title},
 		})

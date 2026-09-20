@@ -20,6 +20,14 @@ import (
 // code logs through log.ErrorLog, nil until Initialize runs; Pause() needs a
 // live *Instance with its worktree and tmux session attached, which only
 // LoadInstances (not raw InstanceData) gives you.
+// : The seam that lets a test drive a FAILING Pause(). ⛔ Without it nothing in
+// : the tree could reach the second ordering hoist: the refusal test stops at
+// : prePauseProof, so target.Pause() never runs, and moving
+// : closeTerminalSession above the Pause call shipped GREEN -- the caller told
+// : "failed to pause, nothing changed" while their terminal pane was already
+// : closed. Same shape kill.go documents, in its neighbour.
+var pauseOp = func(i *session.Instance) error { return i.Pause() }
+
 func pauseInstance(title string) error {
 	log.Initialize(false)
 	defer log.Close()
@@ -67,7 +75,7 @@ func pauseInstance(title string) error {
 		return err
 	}
 
-	if err := target.Pause(); err != nil {
+	if err := pauseOp(target); err != nil {
 		return refused("failed to pause %q: %v", title, err)
 	}
 

@@ -57,7 +57,18 @@ func TestInstanceLimitErrorNamesTheNumberAndTheFile(t *testing.T) {
 	assert.Contains(t, msg, " 3 ", "the error must name the limit actually in force")
 	assert.Contains(t, msg, "instance_limit", "the error must name the key to change")
 	assert.Contains(t, msg, config.ConfigPath(), "the error must name the file being read")
-	assert.NotContains(t, msg, strconv.Itoa(config.DefaultInstanceLimit),
+	//: ⛔ THE PATH IS EXCLUDED BEFORE THE SEARCH, and that is not tidiness.
+	//: This asserted NotContains over the WHOLE message, which embeds
+	//: t.TempDir() -- whose random digits contain "20" (the default limit)
+	//: roughly one run in ten. MEASURED 2026-09-20: 4 of 40 runs red on this
+	//: branch, 1 of 30 on main, from nothing but the path lottery.
+	//:
+	//: ⭐ The cost is not the noise. This suite is the instrument every
+	//: mutation verdict is read from, so a ~10% false red mis-certifies about
+	//: one mutant in ten -- an audit watched a surviving mutant look caught
+	//: because of this exact test.
+	assert.NotContains(t, strings.ReplaceAll(msg, config.ConfigPath(), "<path>"),
+		strconv.Itoa(config.DefaultInstanceLimit),
 		"quoting the default instead of the configured value would mislead")
 	assert.True(t, strings.Contains(msg, "can't create more than"),
 		"the original wording is kept so existing muscle memory still reads")

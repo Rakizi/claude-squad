@@ -594,6 +594,22 @@ func TestCheckoutAndResumePersistWithoutQuitting(t *testing.T) {
 			[]byte(`{"help_screens_seen":0,"instances":{"not":"an array"}}`), 0o644))
 		require.Error(t, h.saveInstances(),
 			"the fallback returned nil without reading state — it never reached storage")
+
+		// ⛔ THE SAME PROOF FOR THE RESUME FALLBACK, and it was missing while the
+		// commit message claimed a mutant covered it. resumeOp is nil here, so
+		// this must reach Instance.Resume -- which refuses a never-started
+		// instance. `return nil` cannot fake an error.
+		//
+		// ⭐ Why it matters in production: newHome sets resumeOp on nothing, so
+		// the `r` keypress runs exactly this body. Gutted, `r` reports success,
+		// persists a still-paused instance, and the session never resumes --
+		// with a green suite. Every subtest that presses `r` sets resumeOp, so
+		// the fallback was exercised by nothing at all.
+		inst, err := session.NewInstance(session.InstanceOptions{
+			Title: "never-started", Path: t.TempDir(), Program: "true"})
+		require.NoError(t, err)
+		require.Error(t, h.resumeInstance(inst),
+			"the resume fallback returned nil without calling Instance.Resume")
 	})
 
 	// ⛔ A FAILED WRITE MUST BE SURFACED. Both handlers checked the error and

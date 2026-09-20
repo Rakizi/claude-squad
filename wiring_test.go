@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -314,4 +315,41 @@ func TestPauseDoesNotTouchTheTerminalOnARefusal(t *testing.T) {
 		"the pause was REFUSED, so the caller was told nothing changed -- "+
 			"closing their terminal pane makes that statement false")
 	assert.Equal(t, session.Running, stored()[0].Status, "a refusal persists nothing")
+}
+
+// ⛔ THE SECOND HOIST. TestPauseDoesNotTouchTheTerminalOnARefusal stops at
+// prePauseProof, so target.Pause() never runs and moving closeTerminalSession
+// above the Pause CALL shipped green. The caller is told "failed to pause,
+// nothing changed" while their terminal pane is already gone -- the same
+// collapse kill.go's own comment documents, in its neighbour.
+func TestPauseDoesNotTouchTheTerminalWhenPauseItselfFails(t *testing.T) {
+	initTestLog(t)
+	repo, _ := killRepo(t)
+	title := fmt.Sprintf("cs6-pause-failed-%d", os.Getpid())
+	gone := filepath.Join(t.TempDir(), "worktree-that-was-removed")
+	// `feat` exists, so prePauseProof passes and execution reaches Pause().
+	stored := storeEntries(t, session.InstanceData{
+		Title: title, Status: session.Running, Program: "true", Branch: "feat",
+		Worktree: session.GitWorktreeData{RepoPath: repo, WorktreePath: gone,
+			BranchName: "feat", SessionName: title},
+	})
+
+	old := pauseOp
+	t.Cleanup(func() { pauseOp = old })
+	pauseOp = func(*session.Instance) error { return errors.New("worktree is dirty") }
+
+	closed := recordTerminalOps(t, tmux.SessionName("term_"+title))
+	err := pauseInstance(title)
+	require.Error(t, err)
+	assert.Equal(t, exitRefused, exitCodeFor(err))
+	require.Empty(t, *closed,
+		"Pause() failed and the caller was told so -- their terminal pane must be untouched")
+	assert.Equal(t, session.Running, stored()[0].Status, "a failed pause persists nothing")
+
+	// ⭐ THE CONTROL: with Pause() succeeding, the pane IS closed. Without it
+	// this passes for a build that never closes the terminal at all.
+	pauseOp = old
+	closed2 := recordTerminalOps(t, tmux.SessionName("term_"+title))
+	require.NoError(t, pauseInstance(title))
+	require.Equal(t, []string{"term_" + title}, *closed2)
 }

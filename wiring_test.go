@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 
 	"claude-squad/config"
 	"claude-squad/session"
+	"claude-squad/session/tmux"
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
@@ -165,4 +167,189 @@ func TestPauseInstanceWiring(t *testing.T) {
 		require.Len(t, stored(), 1)
 		assert.Equal(t, session.Paused, stored()[0].Status)
 	})
+}
+
+// ⛔ A REFUSED KILL MUST NOT CLOSE THE TERMINAL PANE. Driven through killCmd.RunE
+// so the ORDER of closeTerminalSession relative to the pre-kill proof and the
+// teardown is on the tested path.
+//
+// Both mutants that this exists for compiled and left the whole suite green:
+// deleting closeTerminalSession outright, and hoisting it in front of
+// preKillProof. An earlier revision of kill.go also put the call before the
+// teardown, where a post-Kill refusal (exit 2) had already closed a pane the
+// caller was told was untouched.
+func TestKillDoesNotTouchTheTerminalOnARefusal(t *testing.T) {
+	initTestLog(t)
+	repo, _ := killRepo(t)
+	title := fmt.Sprintf("cs6-term-order-%d", os.Getpid())
+	gone := filepath.Join(t.TempDir(), "worktree-that-was-removed")
+	t.Setenv(agentTraceEnv, filepath.Join(t.TempDir(), "must-not-run"))
+	storeEntries(t, session.InstanceData{
+		Title: title, Status: session.Paused, Program: "true", Branch: "feat",
+		Worktree: session.GitWorktreeData{RepoPath: repo, WorktreePath: gone, BranchName: "feat", SessionName: title},
+	})
+
+	closed := recordTerminalOps(t, tmux.SessionName("term_"+title))
+
+	runKill := func(force bool) error {
+		killYes, killForce = true, force
+		defer func() { killYes, killForce = false, false }()
+		_, err := captureStdout(t, func() error { return killCmd.RunE(quietCmd(), []string{title}) })
+		return err
+	}
+
+	err := runKill(false)
+	require.Error(t, err)
+	require.Equal(t, exitRefused, exitCodeFor(err))
+	require.Empty(t, *closed,
+		"the kill was REFUSED, so the caller was told nothing was removed -- "+
+			"closing their terminal pane makes that statement false")
+
+	// ⭐ THE CONTROL. Without it this passes for a build that never closes the
+	// terminal at all, which is the defect the call was added to fix.
+	require.NoError(t, runKill(true))
+	require.Equal(t, []string{"term_" + title}, *closed,
+		"a kill that actually happened must close the term_ session")
+}
+
+// ⛔ THE FIX FOR THE PERMANENT STUCK ENTRY IS A ONE-LINE DECISION IN
+// killInstance, AND NOTHING TESTED IT. `stillPresent` is covered in isolation
+// with a hand-passed probe; what was uncovered is whether killInstance builds
+// the right probe. Both flips of `case wt.IsExistingBranch:` compiled and left
+// the suite green, and each reinstated a shipped defect:
+//
+//	case false:  the existing-branch session is stuck again -- rc=2 forever
+//	case true:   an ordinary session's surviving branch stops being counted,
+//	             which is defect #1 of this PR, back.
+func TestKillCountsTheBranchOnlyWhenTheTeardownWouldDeleteIt(t *testing.T) {
+	initTestLog(t)
+	repo, _ := killRepo(t)
+	gone := filepath.Join(t.TempDir(), "worktree-that-was-removed")
+
+	// ⚠ `feat` is CHECKED OUT in the main repo, so `git branch -D feat` cannot
+	// succeed. That is the only way the branch survives a teardown that meant
+	// to delete it -- and it is the real shape: `pause` copies the branch name
+	// to the clipboard precisely so you can check it out.
+	gitq(t, repo, "checkout", "-q", "feat")
+
+	// The worktree is gone, so Kill() fails and stillPresent decides the
+	// outcome. Only the IsExistingBranch flag differs between the two cases.
+	entry := func(title string, existing bool) session.InstanceData {
+		return session.InstanceData{
+			Title: title, Status: session.Paused, Program: "true", Branch: "feat",
+			Worktree: session.GitWorktreeData{
+				RepoPath: repo, WorktreePath: gone, BranchName: "feat",
+				SessionName: title, IsExistingBranch: existing,
+			},
+		}
+	}
+	runKill := func(title string) error {
+		killYes, killForce = true, true // --force: past the pre-kill proof, not past this
+		defer func() { killYes, killForce = false, false }()
+		_, err := captureStdout(t, func() error { return killCmd.RunE(quietCmd(), []string{title}) })
+		return err
+	}
+
+	t.Run("existing branch: kept by design, so NOT a leftover", func(t *testing.T) {
+		title := fmt.Sprintf("cs6-existing-%d", os.Getpid())
+		stored := storeEntries(t, entry(title, true))
+		err := runKill(title)
+		require.NoError(t, err, "cs new --branch <existing> keeps its branch; "+
+			"counting it as a leftover refuses the kill forever and --force does not reach this path")
+		require.Empty(t, stored(), "the entry must clear")
+	})
+
+	// ⭐ THE CONTROL, and it is the whole point: the SAME branch, the same
+	// failure, only the flag differs. Without it the test above passes for a
+	// build that stopped counting branches at all.
+	t.Run("generated branch: deleted by the teardown, so it IS a leftover", func(t *testing.T) {
+		title := fmt.Sprintf("cs6-generated-%d", os.Getpid())
+		stored := storeEntries(t, entry(title, false))
+		err := runKill(title)
+		require.Error(t, err)
+		assert.Equal(t, exitRefused, exitCodeFor(err))
+		require.Len(t, stored(), 1, "a refused kill must leave the entry alone")
+	})
+}
+
+// ⛔ `pause` IS HALF OF THE TERMINAL-ORPHAN FIX AND ONLY `kill` WAS COVERED.
+// Deleting closeTerminalSession from pause.go alone compiled and stayed green.
+func TestPauseClosesTheTerminalSession(t *testing.T) {
+	initTestLog(t)
+	repo, _ := killRepo(t)
+	title := fmt.Sprintf("cs6-pause-term-%d", os.Getpid())
+	gone := filepath.Join(t.TempDir(), "worktree-that-was-removed")
+	storeEntries(t, session.InstanceData{
+		Title: title, Status: session.Running, Program: "true", Branch: "feat",
+		Worktree: session.GitWorktreeData{RepoPath: repo, WorktreePath: gone, BranchName: "feat", SessionName: title},
+	})
+
+	closed := recordTerminalOps(t, tmux.SessionName("term_"+title))
+	require.NoError(t, pauseInstance(title))
+	require.Equal(t, []string{"term_" + title}, *closed,
+		"pause removes the worktree, so a surviving term_ session sits in a directory that is gone")
+}
+
+// ⛔ AND A REFUSED PAUSE MUST LEAVE THE PANE ALONE. kill.go has this test;
+// pause.go did not, so the exact defect kill.go's own comment documents --
+// "an earlier revision put the call before the teardown, where a refusal had
+// already closed a pane the caller was told was untouched" -- could be
+// reintroduced in pause.go and ship green. Two hoists were found that way.
+func TestPauseDoesNotTouchTheTerminalOnARefusal(t *testing.T) {
+	initTestLog(t)
+	repo, _ := killRepo(t)
+	title := fmt.Sprintf("cs6-pause-refuse-%d", os.Getpid())
+	gone := filepath.Join(t.TempDir(), "worktree-that-was-removed")
+	// A branch that does not exist: prePauseProof refuses before Pause() runs.
+	stored := storeEntries(t, session.InstanceData{
+		Title: title, Status: session.Running, Program: "true", Branch: "no-such-branch",
+		Worktree: session.GitWorktreeData{RepoPath: repo, WorktreePath: gone,
+			BranchName: "no-such-branch", SessionName: title},
+	})
+
+	closed := recordTerminalOps(t, tmux.SessionName("term_"+title))
+	err := pauseInstance(title)
+	require.Error(t, err)
+	assert.Equal(t, exitRefused, exitCodeFor(err))
+	require.Empty(t, *closed,
+		"the pause was REFUSED, so the caller was told nothing changed -- "+
+			"closing their terminal pane makes that statement false")
+	assert.Equal(t, session.Running, stored()[0].Status, "a refusal persists nothing")
+}
+
+// ⛔ THE SECOND HOIST. TestPauseDoesNotTouchTheTerminalOnARefusal stops at
+// prePauseProof, so target.Pause() never runs and moving closeTerminalSession
+// above the Pause CALL shipped green. The caller is told "failed to pause,
+// nothing changed" while their terminal pane is already gone -- the same
+// collapse kill.go's own comment documents, in its neighbour.
+func TestPauseDoesNotTouchTheTerminalWhenPauseItselfFails(t *testing.T) {
+	initTestLog(t)
+	repo, _ := killRepo(t)
+	title := fmt.Sprintf("cs6-pause-failed-%d", os.Getpid())
+	gone := filepath.Join(t.TempDir(), "worktree-that-was-removed")
+	// `feat` exists, so prePauseProof passes and execution reaches Pause().
+	stored := storeEntries(t, session.InstanceData{
+		Title: title, Status: session.Running, Program: "true", Branch: "feat",
+		Worktree: session.GitWorktreeData{RepoPath: repo, WorktreePath: gone,
+			BranchName: "feat", SessionName: title},
+	})
+
+	old := pauseOp
+	t.Cleanup(func() { pauseOp = old })
+	pauseOp = func(*session.Instance) error { return errors.New("worktree is dirty") }
+
+	closed := recordTerminalOps(t, tmux.SessionName("term_"+title))
+	err := pauseInstance(title)
+	require.Error(t, err)
+	assert.Equal(t, exitRefused, exitCodeFor(err))
+	require.Empty(t, *closed,
+		"Pause() failed and the caller was told so -- their terminal pane must be untouched")
+	assert.Equal(t, session.Running, stored()[0].Status, "a failed pause persists nothing")
+
+	// ⭐ THE CONTROL: with Pause() succeeding, the pane IS closed. Without it
+	// this passes for a build that never closes the terminal at all.
+	pauseOp = old
+	closed2 := recordTerminalOps(t, tmux.SessionName("term_"+title))
+	require.NoError(t, pauseInstance(title))
+	require.Equal(t, []string{"term_" + title}, *closed2)
 }

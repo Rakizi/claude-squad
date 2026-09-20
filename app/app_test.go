@@ -7,8 +7,10 @@ import (
 	"claude-squad/ui"
 	"claude-squad/ui/overlay"
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -463,4 +465,211 @@ func TestConfirmationModalVisualAppearance(t *testing.T) {
 
 	// Test that the danger indicator is preserved
 	assert.Contains(t, rendered, "[!")
+}
+
+// ⛔ THE PAUSE AND RESUME HANDLERS MUST WRITE TO STATE, NOT WAIT FOR QUIT.
+// KeyCheckout and KeyResume called Pause()/Resume() and no save, unlike
+// KeyMoveUp/KeyMoveDown three cases away. Measured 2026-09-20: paused in the
+// interface, `cs ls` reported "running · alive · missing" and state.json still
+// held status 0 with the worktree already deleted, until `q`. That window is
+// what dispatch, a watcher and `cs ls` read.
+//
+// ⭐ Deleting both calls COMPILED and left the whole suite green before this
+// test existed (PR #6 audit, mutant M6).
+func TestCheckoutAndResumePersistWithoutQuitting(t *testing.T) {
+	// ⚠ TWICE, NOT ONCE. handleMenuHighlighting swallows the first press, sets
+	// keySent and RE-SENDS the key so the menu can light up; the handler body
+	// only runs on the second call. A single press exercises nothing and the
+	// assertion would read as "the handler does not save" when the handler was
+	// never reached.
+	press := func(h *home, r rune) {
+		msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}}
+		_, _ = h.handleKeyPress(msg)
+		_, _ = h.handleKeyPress(msg)
+	}
+
+	newHomeWithOneInstance := func(t *testing.T, saved *int) *home {
+		t.Helper()
+		sp := spinner.New(spinner.WithSpinner(spinner.MiniDot))
+		list := ui.NewList(&sp, false)
+		inst, err := session.NewInstance(session.InstanceOptions{
+			Title: "t", Path: t.TempDir(), Program: "true",
+		})
+		require.NoError(t, err)
+		// ⚠ Not Loading: both handlers early-return on it, so a test left at the
+		// default status never reaches the code it means to exercise.
+		inst.SetStatus(session.Ready)
+		finalize := list.AddInstance(inst)
+		finalize()
+		list.SetSelectedInstance(0)
+
+		h := &home{
+			ctx:       context.Background(),
+			state:     stateDefault,
+			appConfig: config.DefaultConfig(),
+			list:      list,
+			menu:      ui.NewMenu(),
+			errBox:    ui.NewErrBox(),
+			// the checkout callback closes the instance's terminal pane
+			tabbedWindow: ui.NewTabbedWindow(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
+			appState:     config.LoadState(),
+			// count the writes instead of reaching a real Storage
+			saveHook: func() error { *saved++; return nil },
+		}
+		// Mark the checkout help screen seen so showHelpScreen runs the action
+		// inline rather than parking it behind an overlay.
+		require.NoError(t, h.appState.SetHelpScreensSeen(^uint32(0)))
+		return h
+	}
+
+	t.Run("checkout persists even though Pause failed", func(t *testing.T) {
+		t.Setenv(config.ConfigDirEnvVar, t.TempDir())
+		saved := 0
+		h := newHomeWithOneInstance(t, &saved)
+		press(h, 'c')
+		require.Equal(t, 1, saved,
+			"the checkout handler must write the instance list to state before quit")
+	})
+
+	// ⛔ THE POSITIVE HALF FOR RESUME. Without it, "a failed resume writes
+	// nothing" is equally satisfied by a build that NEVER saves on resume --
+	// a control with nothing to control for, and deleting the resume write
+	// stayed green (audit mutant M6b). A synthetic instance cannot really
+	// resume, hence the seam.
+	t.Run("a successful resume persists", func(t *testing.T) {
+		t.Setenv(config.ConfigDirEnvVar, t.TempDir())
+		saved := 0
+		h := newHomeWithOneInstance(t, &saved)
+		h.resumeOp = func(*session.Instance) error { return nil }
+		press(h, 'r')
+		require.Equal(t, 1, saved,
+			"the resume handler must write the instance list to state before quit")
+	})
+
+	// ⭐ THE CONTROL for that positive: on failure the handler returns BEFORE
+	// persisting, so a build that saved unconditionally is caught here.
+	t.Run("a failed resume writes nothing", func(t *testing.T) {
+		t.Setenv(config.ConfigDirEnvVar, t.TempDir())
+		saved := 0
+		h := newHomeWithOneInstance(t, &saved)
+		h.resumeOp = func(*session.Instance) error { return errors.New("nope") }
+		press(h, 'r')
+		require.Equal(t, 0, saved,
+			"Resume failed, so the handler returned before persisting")
+	})
+
+	// ⛔ THE ZERO VALUE MUST DO THE REAL THING. A home with no seams set must
+	// not panic: the previous shape required a wiring line in newHome, and
+	// deleting it compiled, kept the suite green and killed the interface on
+	// the first keypress.
+	// ⛔ IT MUST PROVE THE FALLBACK REACHES STORAGE. An earlier version asserted
+	// only require.NoError, which `return nil` satisfies — so gutting the
+	// fallback body shipped GREEN while the `c` and `r` keypresses silently lost
+	// their write. That is this PR's own defect #2, reinstated, passing a test
+	// named for preventing it.
+	//
+	// ⚠ Reading the state back does NOT work as the assertion: SyncInstances
+	// skips instances that were never Started, and preserves stored entries it
+	// did not hold, so the file is byte-identical whether the call reached
+	// storage or not. Corrupt stored JSON is the shape that cannot be faked —
+	// only a call that really unmarshals it can fail.
+	t.Run("an unseamed home really reaches storage, not merely returns nil", func(t *testing.T) {
+		t.Setenv(config.ConfigDirEnvVar, t.TempDir())
+		st := config.LoadState()
+		storage, err := session.NewStorage(st)
+		require.NoError(t, err)
+		sp := spinner.New(spinner.WithSpinner(spinner.MiniDot))
+		h := &home{ctx: context.Background(), storage: storage,
+			list: ui.NewList(&sp, false), appState: st}
+
+		// ⭐ CONTROL FIRST: with readable state the fallback succeeds, so the
+		// error below is the corruption and not a broken fixture.
+		require.NoError(t, h.saveInstances())
+
+		// Written straight to disk: SaveInstances validates its own input, so
+		// the corruption has to arrive the way a truncated write or a hand-edit
+		// would. SyncInstances calls config.LoadState() itself, so it re-reads.
+		dir := os.Getenv(config.ConfigDirEnvVar)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "state.json"),
+			[]byte(`{"help_screens_seen":0,"instances":{"not":"an array"}}`), 0o644))
+		require.Error(t, h.saveInstances(),
+			"the fallback returned nil without reading state — it never reached storage")
+
+		// ⛔ THE SAME PROOF FOR THE RESUME FALLBACK, and it was missing while the
+		// commit message claimed a mutant covered it. resumeOp is nil here, so
+		// this must reach Instance.Resume -- which refuses a never-started
+		// instance. `return nil` cannot fake an error.
+		//
+		// ⭐ Why it matters in production: newHome sets resumeOp on nothing, so
+		// the `r` keypress runs exactly this body. Gutted, `r` reports success,
+		// persists a still-paused instance, and the session never resumes --
+		// with a green suite. Every subtest that presses `r` sets resumeOp, so
+		// the fallback was exercised by nothing at all.
+		inst, err := session.NewInstance(session.InstanceOptions{
+			Title: "never-started", Path: t.TempDir(), Program: "true"})
+		require.NoError(t, err)
+		require.Error(t, h.resumeInstance(inst),
+			"the resume fallback returned nil without calling Instance.Resume")
+	})
+
+	// ⛔ A FAILED WRITE MUST BE SURFACED. Both handlers checked the error and
+	// nothing tested that they do, so `_ = m.saveInstances()` shipped green --
+	// and KeyCheckout already swallows a failed Pause(), which would make a
+	// checkout whose state write failed indistinguishable from one that worked.
+	t.Run("a failed write reaches the error box, on both handlers", func(t *testing.T) {
+		for _, key := range []rune{'c', 'r'} {
+			t.Setenv(config.ConfigDirEnvVar, t.TempDir())
+			saved := 0
+			h := newHomeWithOneInstance(t, &saved)
+			h.saveHook = func() error { return errors.New("state is unwritable") }
+			h.resumeOp = func(*session.Instance) error { return nil }
+			press(h, key)
+			require.Contains(t, h.errBox.String(), "state is unwritable",
+				"key %q swallowed a failed state write", string(key))
+		}
+	})
+}
+
+// ⛔ THE FALLBACK MUST PASS ITS OWN LIST, and nothing checked that it does.
+// `saveInstances() -> m.storage.SyncInstances(nil)` compiled and left the whole
+// suite green. It is not a harmless mutant: SyncInstances skips instances that
+// were never Started() and then RE-APPENDS every stored entry it was not
+// holding, so passing nil writes the old file back verbatim. A `c` or `r`
+// keypress would report success and persist nothing new — defect #4 of this PR
+// wearing a different hat.
+//
+// ⚠ I argued this was not closable because the test's instance is never
+// Started(). That was wrong, and cheaply so: session.FromInstanceData takes the
+// Paused branch at session/instance.go:145-147 and sets started = true
+// directly — no tmux server, no git repo, no worktree.
+func TestSaveInstancesPassesItsOwnList(t *testing.T) {
+	t.Setenv(config.ConfigDirEnvVar, t.TempDir())
+	st := config.LoadState()
+	storage, err := session.NewStorage(st)
+	require.NoError(t, err)
+
+	paused, err := session.FromInstanceData(session.InstanceData{
+		Title: "held-by-the-list", Status: session.Paused, Program: "true", Branch: "feat",
+		Worktree: session.GitWorktreeData{
+			RepoPath: t.TempDir(), WorktreePath: t.TempDir(),
+			BranchName: "feat", SessionName: "held-by-the-list",
+		},
+	})
+	require.NoError(t, err)
+	require.True(t, paused.Started(),
+		"precondition: a Paused entry restores as Started, which is what SyncInstances requires")
+
+	sp := spinner.New(spinner.WithSpinner(spinner.MiniDot))
+	list := ui.NewList(&sp, false)
+	finalize := list.AddInstance(paused)
+	finalize()
+
+	h := &home{ctx: context.Background(), storage: storage, list: list, appState: st}
+	require.NoError(t, h.saveInstances())
+
+	// ⭐ The assertion SyncInstances(nil) cannot satisfy: state.json was empty,
+	// so there is no stored entry for the merge to re-append.
+	raw := config.LoadState().GetInstances()
+	require.Contains(t, string(raw), "held-by-the-list",
+		"the fallback dropped the list it was given")
 }

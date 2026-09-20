@@ -11,6 +11,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// : The seam that lets a test drive a FAILING Pause(). ⛔ Without it nothing in
+// : the tree could reach the second ordering hoist: the refusal test stops at
+// : prePauseProof, so target.Pause() never runs, and moving
+// : closeTerminalSession above the Pause call shipped GREEN -- the caller told
+// : "failed to pause, nothing changed" while their terminal pane was already
+// : closed. Same shape kill.go documents, in its neighbour.
+var pauseOp = func(i *session.Instance) error { return i.Pause() }
+
 // pauseInstance pauses one session the way the interface's Checkout key does:
 // stops tmux, removes the worktree (keeps the branch), and persists the
 // resulting Paused status to state -- so a later `resume` (or a restart of
@@ -67,9 +75,14 @@ func pauseInstance(title string) error {
 		return err
 	}
 
-	if err := target.Pause(); err != nil {
+	if err := pauseOp(target); err != nil {
 		return refused("failed to pause %q: %v", title, err)
 	}
+
+	// Close the Terminal-tab session, as the interface's Checkout key does via
+	// CleanupTerminalForInstance. Pause removes the worktree, so a surviving
+	// `term_<title>` session is sitting in a directory that no longer exists.
+	closeTerminalSession(title)
 
 	// ⛔ Pause() only mutates the in-memory Instance. Without this write the
 	// status reverts to whatever was on disk the next time anything reads

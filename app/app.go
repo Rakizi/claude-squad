@@ -88,12 +88,25 @@ type home struct {
 	// appState stores persistent application state like seen help screens
 	appState config.AppState
 
-	// saveInstances writes the instance list to state. It is a FIELD, not a
-	// method, for one reason: without a seam here NOTHING detected the pause and
-	// resume handlers losing their write. Deleting both calls compiled and left
-	// the entire suite green (PR #6 audit, mutant M6), which is a suite
-	// reporting protection it does not provide.
-	saveInstances func() error
+	// saveHook, when non-nil, replaces the state write. ⛔ A SEAM, NOT THE
+	// IMPLEMENTATION. Without one, NOTHING detected the pause and resume
+	// handlers losing their write: deleting both calls compiled and left the
+	// entire suite green (audit mutant M6).
+	//
+	// ⛔ AND IT IS AN OVERRIDE, NOT A REQUIRED FIELD, DELIBERATELY. The first
+	// version was a plain `func() error` wired in newHome -- which meant
+	// deleting that one wiring line compiled, kept the whole suite green, and
+	// PANICKED THE INTERFACE on the first `c` or `r`. No test constructs the
+	// production home (`git grep newHome( -- '*_test.go'` is empty), so nothing
+	// could ever have caught it. saveInstances below falls back to the real
+	// write, so the zero value is correct and that mutant cannot exist.
+	saveHook func() error
+
+	// resumeOp, when non-nil, replaces Instance.Resume. Same reason: the resume
+	// leg's write is on the SUCCESS path, and a synthetic instance cannot
+	// resume, so without this the positive half is untestable and deleting it
+	// stays green (audit mutant M6b).
+	resumeOp func(*session.Instance) error
 
 	// -- State --
 
@@ -174,7 +187,6 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 		state:        stateDefault,
 		appState:     appState,
 	}
-	h.saveInstances = func() error { return h.storage.SyncInstances(h.list.GetInstances()) }
 	cwd, err := os.Getwd()
 	if err != nil {
 		log.WarningLog.Printf("could not determine the working directory: %v", err)
@@ -960,7 +972,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		if selected == nil || selected.Status == session.Loading {
 			return m, nil
 		}
-		if err := selected.Resume(); err != nil {
+		if err := m.resumeInstance(selected); err != nil {
 			return m, m.handleError(err)
 		}
 		// Same reason as KeyCheckout: persist, or the resume is invisible to
@@ -1025,6 +1037,24 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 
 // instanceChanged updates the preview pane, menu, and diff pane based on the selected instance. It returns an error
 // Cmd if there was any error.
+// saveInstances writes the instance list to state, honouring saveHook when a
+// test has set one. ⛔ The fallback is the point: no wiring line to forget.
+func (m *home) saveInstances() error {
+	if m.saveHook != nil {
+		return m.saveHook()
+	}
+	return m.storage.SyncInstances(m.list.GetInstances())
+}
+
+// resumeInstance resumes one instance, honouring resumeOp when a test has set
+// one. Same contract as saveInstances: the zero value does the real thing.
+func (m *home) resumeInstance(i *session.Instance) error {
+	if m.resumeOp != nil {
+		return m.resumeOp(i)
+	}
+	return i.Resume()
+}
+
 func (m *home) instanceChanged() tea.Cmd {
 	// selected may be nil
 	selected := m.list.GetSelectedInstance()

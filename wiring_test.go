@@ -210,3 +210,81 @@ func TestKillDoesNotTouchTheTerminalOnARefusal(t *testing.T) {
 	require.Equal(t, []string{"term_" + title}, *closed,
 		"a kill that actually happened must close the term_ session")
 }
+
+// ⛔ THE FIX FOR THE PERMANENT STUCK ENTRY IS A ONE-LINE DECISION IN
+// killInstance, AND NOTHING TESTED IT. `stillPresent` is covered in isolation
+// with a hand-passed probe; what was uncovered is whether killInstance builds
+// the right probe. Both flips of `case wt.IsExistingBranch:` compiled and left
+// the suite green, and each reinstated a shipped defect:
+//
+//	case false:  the existing-branch session is stuck again -- rc=2 forever
+//	case true:   an ordinary session's surviving branch stops being counted,
+//	             which is defect #1 of this PR, back.
+func TestKillCountsTheBranchOnlyWhenTheTeardownWouldDeleteIt(t *testing.T) {
+	initTestLog(t)
+	repo, _ := killRepo(t)
+	gone := filepath.Join(t.TempDir(), "worktree-that-was-removed")
+
+	// ⚠ `feat` is CHECKED OUT in the main repo, so `git branch -D feat` cannot
+	// succeed. That is the only way the branch survives a teardown that meant
+	// to delete it -- and it is the real shape: `pause` copies the branch name
+	// to the clipboard precisely so you can check it out.
+	gitq(t, repo, "checkout", "-q", "feat")
+
+	// The worktree is gone, so Kill() fails and stillPresent decides the
+	// outcome. Only the IsExistingBranch flag differs between the two cases.
+	entry := func(title string, existing bool) session.InstanceData {
+		return session.InstanceData{
+			Title: title, Status: session.Paused, Program: "true", Branch: "feat",
+			Worktree: session.GitWorktreeData{
+				RepoPath: repo, WorktreePath: gone, BranchName: "feat",
+				SessionName: title, IsExistingBranch: existing,
+			},
+		}
+	}
+	runKill := func(title string) error {
+		killYes, killForce = true, true // --force: past the pre-kill proof, not past this
+		defer func() { killYes, killForce = false, false }()
+		_, err := captureStdout(t, func() error { return killCmd.RunE(quietCmd(), []string{title}) })
+		return err
+	}
+
+	t.Run("existing branch: kept by design, so NOT a leftover", func(t *testing.T) {
+		title := fmt.Sprintf("cs6-existing-%d", os.Getpid())
+		stored := storeEntries(t, entry(title, true))
+		err := runKill(title)
+		require.NoError(t, err, "cs new --branch <existing> keeps its branch; "+
+			"counting it as a leftover refuses the kill forever and --force does not reach this path")
+		require.Empty(t, stored(), "the entry must clear")
+	})
+
+	// ⭐ THE CONTROL, and it is the whole point: the SAME branch, the same
+	// failure, only the flag differs. Without it the test above passes for a
+	// build that stopped counting branches at all.
+	t.Run("generated branch: deleted by the teardown, so it IS a leftover", func(t *testing.T) {
+		title := fmt.Sprintf("cs6-generated-%d", os.Getpid())
+		stored := storeEntries(t, entry(title, false))
+		err := runKill(title)
+		require.Error(t, err)
+		assert.Equal(t, exitRefused, exitCodeFor(err))
+		require.Len(t, stored(), 1, "a refused kill must leave the entry alone")
+	})
+}
+
+// ⛔ `pause` IS HALF OF THE TERMINAL-ORPHAN FIX AND ONLY `kill` WAS COVERED.
+// Deleting closeTerminalSession from pause.go alone compiled and stayed green.
+func TestPauseClosesTheTerminalSession(t *testing.T) {
+	initTestLog(t)
+	repo, _ := killRepo(t)
+	title := fmt.Sprintf("cs6-pause-term-%d", os.Getpid())
+	gone := filepath.Join(t.TempDir(), "worktree-that-was-removed")
+	storeEntries(t, session.InstanceData{
+		Title: title, Status: session.Running, Program: "true", Branch: "feat",
+		Worktree: session.GitWorktreeData{RepoPath: repo, WorktreePath: gone, BranchName: "feat", SessionName: title},
+	})
+
+	closed := recordTerminalOps(t, tmux.SessionName("term_"+title))
+	_ = pauseInstance(title)
+	require.Equal(t, []string{"term_" + title}, *closed,
+		"pause removes the worktree, so a surviving term_ session sits in a directory that is gone")
+}

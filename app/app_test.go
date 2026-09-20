@@ -7,6 +7,7 @@ import (
 	"claude-squad/ui"
 	"claude-squad/ui/overlay"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -512,7 +513,7 @@ func TestCheckoutAndResumePersistWithoutQuitting(t *testing.T) {
 			tabbedWindow: ui.NewTabbedWindow(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
 			appState:     config.LoadState(),
 			// count the writes instead of reaching a real Storage
-			saveInstances: func() error { *saved++; return nil },
+			saveHook: func() error { *saved++; return nil },
 		}
 		// Mark the checkout help screen seen so showHelpScreen runs the action
 		// inline rather than parking it behind an overlay.
@@ -529,16 +530,45 @@ func TestCheckoutAndResumePersistWithoutQuitting(t *testing.T) {
 			"the checkout handler must write the instance list to state before quit")
 	})
 
-	// ⭐ THE CONTROL. Resume returns early on error, so the write must NOT
-	// happen here -- without this, the test above would pass for a build that
-	// saved unconditionally on every keypress, which proves nothing about
-	// either handler.
+	// ⛔ THE POSITIVE HALF FOR RESUME. Without it, "a failed resume writes
+	// nothing" is equally satisfied by a build that NEVER saves on resume --
+	// a control with nothing to control for, and deleting the resume write
+	// stayed green (audit mutant M6b). A synthetic instance cannot really
+	// resume, hence the seam.
+	t.Run("a successful resume persists", func(t *testing.T) {
+		t.Setenv(config.ConfigDirEnvVar, t.TempDir())
+		saved := 0
+		h := newHomeWithOneInstance(t, &saved)
+		h.resumeOp = func(*session.Instance) error { return nil }
+		press(h, 'r')
+		require.Equal(t, 1, saved,
+			"the resume handler must write the instance list to state before quit")
+	})
+
+	// ⭐ THE CONTROL for that positive: on failure the handler returns BEFORE
+	// persisting, so a build that saved unconditionally is caught here.
 	t.Run("a failed resume writes nothing", func(t *testing.T) {
 		t.Setenv(config.ConfigDirEnvVar, t.TempDir())
 		saved := 0
 		h := newHomeWithOneInstance(t, &saved)
+		h.resumeOp = func(*session.Instance) error { return errors.New("nope") }
 		press(h, 'r')
 		require.Equal(t, 0, saved,
 			"Resume failed, so the handler returned before persisting")
+	})
+
+	// ⛔ THE ZERO VALUE MUST DO THE REAL THING. A home with no seams set must
+	// not panic: the previous shape required a wiring line in newHome, and
+	// deleting it compiled, kept the suite green and killed the interface on
+	// the first keypress.
+	t.Run("an unseamed home falls back to the real write", func(t *testing.T) {
+		t.Setenv(config.ConfigDirEnvVar, t.TempDir())
+		st := config.LoadState()
+		storage, err := session.NewStorage(st)
+		require.NoError(t, err)
+		sp := spinner.New(spinner.WithSpinner(spinner.MiniDot))
+		h := &home{ctx: context.Background(), storage: storage,
+			list: ui.NewList(&sp, false), appState: st}
+		require.NoError(t, h.saveInstances(), "the fallback must work with no hook set")
 	})
 }

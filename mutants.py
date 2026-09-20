@@ -16,6 +16,19 @@ can re-run rather than a sentence anyone has to trust.
 
 A mutant that does not COMPILE is reported INVALID, never RED: a build failure
 proves an unused identifier, not a test that detects behaviour.
+
+⛔ AND THE UNMUTATED TREE IS PROVED GREEN FIRST. Without that, "the mutant was
+detected" and "the suite was already red" are the same non-zero exit -- the
+exact collapse this branch spent five rounds removing from kill and pause,
+reinstated in the tool that certifies them. MEASURED: with one unrelated failing
+test in the tree, a mutant that CHANGES ZERO BYTES was reported RED and the
+harness exited 0. The flake this branch just fixed ran at ~9% per run and this
+harness mutates 7 files, so roughly HALF of all runs had at least one free RED.
+
+Exits follow the house contract: 0 every mutant died · 1 something SURVIVED ·
+3 COULD NOT LOOK (the baseline is red, or a mutant could not be applied). ⛔
+INVALID is a could-not-look, not a finding -- collapsing it into 1 is the same
+defect one more layer down.
 """
 import pathlib
 import shutil
@@ -39,10 +52,21 @@ MUTANTS = [
      "\treturn nil\n}", "c and r silently lose their write"),
     ("M11", "app/app.go", "\treturn i.Resume()\n}", "\treturn nil\n}",
      "r reports success and never resumes"),
+    ("N6", "app/app.go", "\treturn m.storage.SyncInstances(m.list.GetInstances())",
+     "\treturn m.storage.SyncInstances(nil)",
+     "the fallback drops the list and writes the old file back verbatim"),
     #: The hoist that shipped GREEN until round 5 -- moved above the Pause
     #: CALL, not above the proof. The refusal test stops at prePauseProof, so
     #: target.Pause() never runs and only a seam can reach this.
-    ("N4", "pause.go", "\tif err := pauseOp(target); err != nil {",
+    #: ⚠ A MOVE, NOT A DUPLICATE. Inserting a second call and leaving the first
+    #: models a build that closes the pane TWICE, which is not the defect. The
+    #: anchor spans from the real call to the Pause call so the replacement can
+    #: delete one and insert the other in a single edit.
+    ("N4", "pause.go",
+     "\tcloseTerminalSession(title)\n\n\t// \u26d4 Pause() only mutates",
+     "\t// \u26d4 Pause() only mutates",
+     "the pane is never closed on a successful pause (half of the move)"),
+    ("N4b", "pause.go", "\tif err := pauseOp(target); err != nil {",
      "\tcloseTerminalSession(title)\n\tif err := pauseOp(target); err != nil {",
      "a failed pause closes the pane it said it left alone"),
 ]
@@ -55,6 +79,20 @@ def sh(*cmd, cwd):
 def main(argv):
     want = set(argv[1:])
     rc = 0
+
+    #: ⛔ THE BASELINE, BEFORE ANY MUTATION. A red tree makes every mutant look
+    #: killed, for free.
+    with tempfile.TemporaryDirectory() as tmp:
+        base = pathlib.Path(tmp) / "base"
+        shutil.copytree(ROOT, base, ignore=shutil.ignore_patterns(".git"))
+        if sh("go", "build", "./...", cwd=base) != 0:
+            print("  COULD NOT LOOK  the unmutated tree does not BUILD")
+            return 3
+        if sh("go", "test", "./...", "-count=1", cwd=base) != 0:
+            print("  COULD NOT LOOK  the unmutated tree is not green -- every RED "
+                  "below would be free. Fix the suite first.")
+            return 3
+    print("  baseline: build and go test ./... GREEN before the first mutation")
     for name, rel, before, after, reinstates in MUTANTS:
         if want and name not in want:
             continue
@@ -66,22 +104,29 @@ def main(argv):
             if src.count(before) != 1:
                 print("  INVALID   %-5s anchor appears %d times, not once"
                       % (name, src.count(before)))
-                rc = 1
+                rc = max(rc, 3)
                 continue
-            f.write_text(src.replace(before, after, 1))
+            mutated = src.replace(before, after, 1)
+            if mutated == src:
+                #: before == after changes nothing, so a RED would be the
+                #: baseline's, not the mutant's.
+                print("  INVALID   %-5s mutates ZERO BYTES" % name)
+                rc = max(rc, 3)
+                continue
+            f.write_text(mutated)
             if sh("go", "build", "./...", cwd=tree) != 0:
                 print("  INVALID   %-5s does not compile -- proves an unused "
                       "identifier, not a behavioural guard" % name)
-                rc = 1
+                rc = max(rc, 3)
                 continue
             if sh("go", "vet", "./...", cwd=tree) != 0:
                 print("  INVALID   %-5s does not vet" % name)
-                rc = 1
+                rc = max(rc, 3)
                 continue
             red = sh("go", "test", "./...", "-count=1", cwd=tree) != 0
             print("  %-9s %-5s %s" % ("RED" if red else "SURVIVED", name, reinstates))
             if not red:
-                rc = 1
+                rc = max(rc, 1)
     return rc
 
 

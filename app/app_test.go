@@ -629,3 +629,47 @@ func TestCheckoutAndResumePersistWithoutQuitting(t *testing.T) {
 		}
 	})
 }
+
+// ⛔ THE FALLBACK MUST PASS ITS OWN LIST, and nothing checked that it does.
+// `saveInstances() -> m.storage.SyncInstances(nil)` compiled and left the whole
+// suite green. It is not a harmless mutant: SyncInstances skips instances that
+// were never Started() and then RE-APPENDS every stored entry it was not
+// holding, so passing nil writes the old file back verbatim. A `c` or `r`
+// keypress would report success and persist nothing new — defect #4 of this PR
+// wearing a different hat.
+//
+// ⚠ I argued this was not closable because the test's instance is never
+// Started(). That was wrong, and cheaply so: session.FromInstanceData takes the
+// Paused branch at session/instance.go:145-147 and sets started = true
+// directly — no tmux server, no git repo, no worktree.
+func TestSaveInstancesPassesItsOwnList(t *testing.T) {
+	t.Setenv(config.ConfigDirEnvVar, t.TempDir())
+	st := config.LoadState()
+	storage, err := session.NewStorage(st)
+	require.NoError(t, err)
+
+	paused, err := session.FromInstanceData(session.InstanceData{
+		Title: "held-by-the-list", Status: session.Paused, Program: "true", Branch: "feat",
+		Worktree: session.GitWorktreeData{
+			RepoPath: t.TempDir(), WorktreePath: t.TempDir(),
+			BranchName: "feat", SessionName: "held-by-the-list",
+		},
+	})
+	require.NoError(t, err)
+	require.True(t, paused.Started(),
+		"precondition: a Paused entry restores as Started, which is what SyncInstances requires")
+
+	sp := spinner.New(spinner.WithSpinner(spinner.MiniDot))
+	list := ui.NewList(&sp, false)
+	finalize := list.AddInstance(paused)
+	finalize()
+
+	h := &home{ctx: context.Background(), storage: storage, list: list, appState: st}
+	require.NoError(t, h.saveInstances())
+
+	// ⭐ The assertion SyncInstances(nil) cannot satisfy: state.json was empty,
+	// so there is no stored entry for the merge to re-append.
+	raw := config.LoadState().GetInstances()
+	require.Contains(t, string(raw), "held-by-the-list",
+		"the fallback dropped the list it was given")
+}

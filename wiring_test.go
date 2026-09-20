@@ -10,6 +10,7 @@ import (
 
 	"claude-squad/config"
 	"claude-squad/session"
+	"claude-squad/session/tmux"
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
@@ -165,4 +166,47 @@ func TestPauseInstanceWiring(t *testing.T) {
 		require.Len(t, stored(), 1)
 		assert.Equal(t, session.Paused, stored()[0].Status)
 	})
+}
+
+// ⛔ A REFUSED KILL MUST NOT CLOSE THE TERMINAL PANE. Driven through killCmd.RunE
+// so the ORDER of closeTerminalSession relative to the pre-kill proof and the
+// teardown is on the tested path.
+//
+// Both mutants that this exists for compiled and left the whole suite green:
+// deleting closeTerminalSession outright, and hoisting it in front of
+// preKillProof. An earlier revision of kill.go also put the call before the
+// teardown, where a post-Kill refusal (exit 2) had already closed a pane the
+// caller was told was untouched.
+func TestKillDoesNotTouchTheTerminalOnARefusal(t *testing.T) {
+	initTestLog(t)
+	repo, _ := killRepo(t)
+	title := fmt.Sprintf("cs6-term-order-%d", os.Getpid())
+	gone := filepath.Join(t.TempDir(), "worktree-that-was-removed")
+	t.Setenv(agentTraceEnv, filepath.Join(t.TempDir(), "must-not-run"))
+	storeEntries(t, session.InstanceData{
+		Title: title, Status: session.Paused, Program: "true", Branch: "feat",
+		Worktree: session.GitWorktreeData{RepoPath: repo, WorktreePath: gone, BranchName: "feat", SessionName: title},
+	})
+
+	closed := recordTerminalOps(t, tmux.SessionName("term_"+title))
+
+	runKill := func(force bool) error {
+		killYes, killForce = true, force
+		defer func() { killYes, killForce = false, false }()
+		_, err := captureStdout(t, func() error { return killCmd.RunE(quietCmd(), []string{title}) })
+		return err
+	}
+
+	err := runKill(false)
+	require.Error(t, err)
+	require.Equal(t, exitRefused, exitCodeFor(err))
+	require.Empty(t, *closed,
+		"the kill was REFUSED, so the caller was told nothing was removed -- "+
+			"closing their terminal pane makes that statement false")
+
+	// ⭐ THE CONTROL. Without it this passes for a build that never closes the
+	// terminal at all, which is the defect the call was added to fix.
+	require.NoError(t, runKill(true))
+	require.Equal(t, []string{"term_" + title}, *closed,
+		"a kill that actually happened must close the term_ session")
 }

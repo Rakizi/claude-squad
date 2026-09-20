@@ -88,6 +88,13 @@ type home struct {
 	// appState stores persistent application state like seen help screens
 	appState config.AppState
 
+	// saveInstances writes the instance list to state. It is a FIELD, not a
+	// method, for one reason: without a seam here NOTHING detected the pause and
+	// resume handlers losing their write. Deleting both calls compiled and left
+	// the entire suite green (PR #6 audit, mutant M6), which is a suite
+	// reporting protection it does not provide.
+	saveInstances func() error
+
 	// -- State --
 
 	// state is the current discrete state of the application
@@ -167,6 +174,7 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 		state:        stateDefault,
 		appState:     appState,
 	}
+	h.saveInstances = func() error { return h.storage.SyncInstances(h.list.GetInstances()) }
 	cwd, err := os.Getwd()
 	if err != nil {
 		log.WarningLog.Printf("could not determine the working directory: %v", err)
@@ -925,7 +933,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			// MEASURED 2026-09-20: paused in the interface, `cs ls` reported
 			// "running · alive · missing" and state.json held status 0 until `q`.
 			// KeyMoveUp/KeyMoveDown three cases below already save on every press.
-			if err := m.storage.SyncInstances(m.list.GetInstances()); err != nil {
+			if err := m.saveInstances(); err != nil {
 				m.handleError(err)
 			}
 			m.instanceChanged()
@@ -957,7 +965,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		}
 		// Same reason as KeyCheckout: persist, or the resume is invisible to
 		// every reader outside this process until the interface quits.
-		if err := m.storage.SyncInstances(m.list.GetInstances()); err != nil {
+		if err := m.saveInstances(); err != nil {
 			return m, m.handleError(err)
 		}
 		return m, tea.WindowSize()

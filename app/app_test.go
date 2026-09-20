@@ -464,3 +464,81 @@ func TestConfirmationModalVisualAppearance(t *testing.T) {
 	// Test that the danger indicator is preserved
 	assert.Contains(t, rendered, "[!")
 }
+
+// ⛔ THE PAUSE AND RESUME HANDLERS MUST WRITE TO STATE, NOT WAIT FOR QUIT.
+// KeyCheckout and KeyResume called Pause()/Resume() and no save, unlike
+// KeyMoveUp/KeyMoveDown three cases away. Measured 2026-09-20: paused in the
+// interface, `cs ls` reported "running · alive · missing" and state.json still
+// held status 0 with the worktree already deleted, until `q`. That window is
+// what dispatch, a watcher and `cs ls` read.
+//
+// ⭐ Deleting both calls COMPILED and left the whole suite green before this
+// test existed (PR #6 audit, mutant M6).
+func TestCheckoutAndResumePersistWithoutQuitting(t *testing.T) {
+	// ⚠ TWICE, NOT ONCE. handleMenuHighlighting swallows the first press, sets
+	// keySent and RE-SENDS the key so the menu can light up; the handler body
+	// only runs on the second call. A single press exercises nothing and the
+	// assertion would read as "the handler does not save" when the handler was
+	// never reached.
+	press := func(h *home, r rune) {
+		msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}}
+		_, _ = h.handleKeyPress(msg)
+		_, _ = h.handleKeyPress(msg)
+	}
+
+	newHomeWithOneInstance := func(t *testing.T, saved *int) *home {
+		t.Helper()
+		sp := spinner.New(spinner.WithSpinner(spinner.MiniDot))
+		list := ui.NewList(&sp, false)
+		inst, err := session.NewInstance(session.InstanceOptions{
+			Title: "t", Path: t.TempDir(), Program: "true",
+		})
+		require.NoError(t, err)
+		// ⚠ Not Loading: both handlers early-return on it, so a test left at the
+		// default status never reaches the code it means to exercise.
+		inst.SetStatus(session.Ready)
+		finalize := list.AddInstance(inst)
+		finalize()
+		list.SetSelectedInstance(0)
+
+		h := &home{
+			ctx:       context.Background(),
+			state:     stateDefault,
+			appConfig: config.DefaultConfig(),
+			list:      list,
+			menu:      ui.NewMenu(),
+			errBox:    ui.NewErrBox(),
+			// the checkout callback closes the instance's terminal pane
+			tabbedWindow: ui.NewTabbedWindow(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
+			appState:     config.LoadState(),
+			// count the writes instead of reaching a real Storage
+			saveInstances: func() error { *saved++; return nil },
+		}
+		// Mark the checkout help screen seen so showHelpScreen runs the action
+		// inline rather than parking it behind an overlay.
+		require.NoError(t, h.appState.SetHelpScreensSeen(^uint32(0)))
+		return h
+	}
+
+	t.Run("checkout persists even though Pause failed", func(t *testing.T) {
+		t.Setenv(config.ConfigDirEnvVar, t.TempDir())
+		saved := 0
+		h := newHomeWithOneInstance(t, &saved)
+		press(h, 'c')
+		require.Equal(t, 1, saved,
+			"the checkout handler must write the instance list to state before quit")
+	})
+
+	// ⭐ THE CONTROL. Resume returns early on error, so the write must NOT
+	// happen here -- without this, the test above would pass for a build that
+	// saved unconditionally on every keypress, which proves nothing about
+	// either handler.
+	t.Run("a failed resume writes nothing", func(t *testing.T) {
+		t.Setenv(config.ConfigDirEnvVar, t.TempDir())
+		saved := 0
+		h := newHomeWithOneInstance(t, &saved)
+		press(h, 'r')
+		require.Equal(t, 0, saved,
+			"Resume failed, so the handler returned before persisting")
+	})
+}

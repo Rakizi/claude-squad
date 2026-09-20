@@ -83,14 +83,32 @@ func killInstance(command *cobra.Command, title string, force bool) (string, err
 	worktreePath := wt.WorktreePath
 	branchName := wt.BranchName
 
-	// The live worktree object, captured BEFORE Kill: stillPresent asks it
-	// whether the branch survived a failed teardown. Not fatal if unavailable --
-	// the branch leg is then simply not checked, and stillPresent says nothing
-	// it cannot prove.
+	// The branch probe, captured BEFORE Kill: stillPresent asks it whether the
+	// branch survived a failed teardown.
+	//
+	// ⛔ ONLY WHEN THE BRANCH IS ACTUALLY A DESTINATION. session/git's Cleanup
+	// deletes the branch `if !g.isExistingBranch` -- a session made by
+	// `cs new --branch <existing>` KEEPS its branch by design. Counting that
+	// branch as a leftover refuses the kill forever, and --force does not reach
+	// here (it covers preKillProof only). MEASURED 2026-09-20: an
+	// existing-branch session whose tmux server had died went from `rc=0, entry
+	// cleared` to `rc=2` on every retry, permanently stuck -- the exact stuck
+	// entry this command exists to clear. Control in the same run: an ordinary
+	// paused session still cleared, so the bug was specific to this flag.
+	//
+	// ⛔ AND `var probe branchProbe` IS NOT COSMETIC. Assigning a nil
+	// *git.GitWorktree to the interface makes a NON-NIL interface holding a nil
+	// pointer, so `probe != nil` is true and BranchExists dereferences it.
+	// Measured: panic. A nil interface is the only spelling that skips the leg.
+	var probe branchProbe
 	gw, gwErr := target.GetGitWorktree()
-	if gwErr != nil {
-		log.WarningLog.Printf("could not read worktree for %q, branch leftovers will not be checked: %v", title, gwErr)
-		gw = nil
+	switch {
+	case gwErr != nil:
+		log.WarningLog.Printf("could not read worktree for %q; branch leftovers will not be checked: %v", title, gwErr)
+	case wt.IsExistingBranch:
+		log.InfoLog.Printf("%q runs on a pre-existing branch; the teardown keeps it, so it is not a leftover", title)
+	default:
+		probe = gw
 	}
 
 	// ⛔ THE PRE-KILL PROOF, before anything is torn down. See prekill.go. A
@@ -103,17 +121,6 @@ func killInstance(command *cobra.Command, title string, force bool) (string, err
 		}
 		note = recordForcedKill(title, err)
 	}
-
-	// Close the Terminal-tab session, as the interface's D does via
-	// CleanupTerminalForInstance. It is a SEPARATE tmux session (`term_<title>`)
-	// that Instance.Kill knows nothing about, and once the state entry is gone
-	// nothing will ever reap it. MEASURED 2026-09-20: `cs kill` left
-	// claudesquad_term_cslab-k3 running with its instance already deleted.
-	//
-	// ⛔ AFTER THE PROOF, NEVER BEFORE IT. A refused kill must have removed
-	// NOTHING -- closing the terminal first would destroy a pane the caller was
-	// told was untouched.
-	closeTerminalSession(title)
 
 	// Tear down. If it fails, the entry is LEFT ALONE on purpose: an entry
 	// pointing at a half-removed worktree is recoverable, an orphaned worktree
@@ -128,7 +135,7 @@ func killInstance(command *cobra.Command, title string, force bool) (string, err
 	// The question is not "did the teardown command succeed" but "is the thing
 	// gone". So on error, ASK THE DESTINATIONS.
 	if err := target.Kill(); err != nil {
-		leftover, lookErr := stillPresent(title, worktreePath, gw, branchName)
+		leftover, lookErr := stillPresent(title, worktreePath, probe, branchName)
 		if lookErr != nil {
 			return "", couldNotLook(
 				"tearing down %q failed (%v) and whether anything remains could NOT be\n"+
@@ -139,6 +146,19 @@ func killInstance(command *cobra.Command, title string, force bool) (string, err
 		}
 		fmt.Fprintf(command.OutOrStdout(), "%s\talready torn down (%v)\n", title, err)
 	}
+
+	// Close the Terminal-tab session, as the interface's D does via
+	// CleanupTerminalForInstance. It is a SEPARATE tmux session (`term_<title>`)
+	// that Instance.Kill knows nothing about, and once the state entry is gone
+	// nothing will ever reap it. MEASURED 2026-09-20: `cs kill` left
+	// claudesquad_term_cslab-k3 running with its instance already deleted.
+	//
+	// ⛔ ONLY ONCE THE SESSION IS PROVABLY GONE. Every `return` above leaves the
+	// pane untouched, which is what "a refused kill removed NOTHING" has to mean
+	// -- and an earlier revision of this file put the call before the teardown,
+	// where a post-Kill refusal (exit 2) had already closed a pane the caller
+	// was told was untouched.
+	closeTerminalSession(title)
 	// ⛔ NOT storage.DeleteInstance. It calls LoadInstances AGAIN -- and by now
 	// the worktree is gone, so FromInstanceData's Start(false) errors, tries to
 	// log, and (before the logging fix) died on a nil logger. MEASURED
@@ -159,9 +179,19 @@ func killInstance(command *cobra.Command, title string, force bool) (string, err
 // exists. Best-effort by design: a session that was never opened is not an
 // error, and failing to close it must not stop a teardown that otherwise
 // succeeded.
+//
+// ⚠ The two seams exist so a test can observe the call. Without them nothing
+// detected this function being DELETED or HOISTED in front of the pre-kill
+// proof -- both mutants compiled and the whole suite stayed green, which is a
+// test suite reporting protection it does not provide.
+var (
+	listTmuxSessions = func() ([]string, error) { return tmux.LiveSessions(cmd.MakeExecutor()) }
+	closeTmuxSession = func(name string) error { return tmux.NewTmuxSession(name, "").Close() }
+)
+
 func closeTerminalSession(title string) {
 	want := tmux.SessionName("term_" + title)
-	live, err := tmux.LiveSessions(cmd.MakeExecutor())
+	live, err := listTmuxSessions()
 	if err != nil {
 		// COULD NOT LOOK. Say so in the log rather than guessing it is absent.
 		log.WarningLog.Printf("could not list tmux sessions to close %s: %v", want, err)
@@ -169,7 +199,7 @@ func closeTerminalSession(title string) {
 	}
 	for _, name := range live {
 		if name == want {
-			if err := tmux.NewTmuxSession("term_"+title, "").Close(); err != nil {
+			if err := closeTmuxSession("term_" + title); err != nil {
 				log.WarningLog.Printf("failed to close terminal session %s: %v", want, err)
 			}
 			return
@@ -178,7 +208,9 @@ func closeTerminalSession(title string) {
 }
 
 // stillPresent reports which of a session's destinations survived a failed
-// teardown. ⛔ ALL FOUR ARE DESTINATIONS, NOT THREE. This function checked the
+// teardown. ⛔ THE BRANCH IS A DESTINATION TOO -- WHEN THE TEARDOWN WOULD HAVE
+// DELETED IT; an existing-branch session keeps its branch and the caller passes
+// no probe for it. This function checked the
 // tmux session and the worktree PATH only, and a branch that could not be
 // deleted left both of those clean -- so `cs kill` printed the branch error,
 // concluded "already torn down", removed the state entry and EXITED 0.

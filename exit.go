@@ -1,6 +1,9 @@
 package main
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // Exit codes. A caller must be able to tell these apart WITHOUT parsing the
 // message, because the three call for different responses:
@@ -44,12 +47,28 @@ func couldNotLook(format string, a ...any) error {
 }
 
 // exitCodeFor returns the code an error should exit with.
+//
+// ⛔ errors.As, NOT a type assertion. A bare type assertion only sees the
+// OUTERMOST error, so the moment a caller adds context --
+// fmt.Errorf("...: %w", err) -- a couldNotLook stopped being one and came out
+// as exitUsage. MEASURED 2026-09-20:
+//
+//	bare couldNotLook          -> 3
+//	the same wrapped with %w   -> 1          <- the collapse
+//	⭐ CONTROL, a plain error  -> 1          (so 1 is not proof of anything)
+//
+// That is this repository's own three-state rule failing inside the function
+// that exists to enforce it, and the live path was kill.go's "failed to read
+// stored instances" -- a genuine could-not-look reaching a script as "bad
+// arguments". Found by the independent review of Rakizi/claude-squad#3;
+// exit.go was untouched by that PR.
 func exitCodeFor(err error) int {
 	if err == nil {
 		return exitOK
 	}
 	type coder interface{ ExitCode() int }
-	if c, ok := err.(coder); ok {
+	var c coder
+	if errors.As(err, &c) {
 		return c.ExitCode()
 	}
 	return exitUsage

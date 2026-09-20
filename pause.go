@@ -71,6 +71,11 @@ func pauseInstance(title string) error {
 		return refused("failed to pause %q: %v", title, err)
 	}
 
+	// Close the Terminal-tab session, as the interface's Checkout key does via
+	// CleanupTerminalForInstance. Pause removes the worktree, so a surviving
+	// `term_<title>` session is sitting in a directory that no longer exists.
+	closeTerminalSession(title)
+
 	// ⛔ Pause() only mutates the in-memory Instance. Without this write the
 	// status reverts to whatever was on disk the next time anything reads
 	// state -- the same class of bug kill.go's own comment warns about for

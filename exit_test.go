@@ -58,3 +58,31 @@ func TestExitCodeFor(t *testing.T) {
 		assert.Equal(t, exitCouldNotLook, exitCodeFor(wrapped))
 	})
 }
+
+// ⛔ THE WRAPPED CASE IS THE WHOLE POINT. With a type assertion instead of
+// errors.As this test goes red on the second subtest and green on the other
+// two -- which is exactly how the defect survived: the bare case, the one
+// everybody writes a test for, was always correct.
+func TestExitCodeForSurvivesWrapping(t *testing.T) {
+	cnl := couldNotLook("state unreadable")
+
+	if got := exitCodeFor(cnl); got != exitCouldNotLook {
+		t.Fatalf("bare couldNotLook: got %d, want %d", got, exitCouldNotLook)
+	}
+
+	wrapped := fmt.Errorf("failed to read stored instances: %w", cnl)
+	if got := exitCodeFor(wrapped); got != exitCouldNotLook {
+		t.Fatalf("WRAPPED couldNotLook: got %d, want %d -- a could-not-look "+
+			"became exit %d, and a script reading the code cannot tell", got, exitCouldNotLook, got)
+	}
+
+	if got := exitCodeFor(fmt.Errorf("refused: %w", refused("no such title"))); got != exitRefused {
+		t.Fatalf("wrapped refused: got %d, want %d", got, exitRefused)
+	}
+
+	// ⭐ CONTROL: a plain error must still be exitUsage, or the test above
+	// would pass for a function that returned 3 for everything.
+	if got := exitCodeFor(errors.New("just an error")); got != exitUsage {
+		t.Fatalf("plain error: got %d, want %d", got, exitUsage)
+	}
+}

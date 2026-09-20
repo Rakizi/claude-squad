@@ -918,6 +918,16 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 				m.handleError(err)
 			}
 			m.tabbedWindow.CleanupTerminalForInstance(selected.Title)
+			// ⛔ Pause() only mutates the in-memory Instance. Without this write
+			// the pause does not reach state.json until the interface QUITS, and
+			// until then every other reader -- `cs ls`, a watcher, ops/bin/dispatch
+			// -- sees the session as RUNNING with its worktree already deleted.
+			// MEASURED 2026-09-20: paused in the interface, `cs ls` reported
+			// "running · alive · missing" and state.json held status 0 until `q`.
+			// KeyMoveUp/KeyMoveDown three cases below already save on every press.
+			if err := m.storage.SyncInstances(m.list.GetInstances()); err != nil {
+				m.handleError(err)
+			}
 			m.instanceChanged()
 		})
 		return m, nil
@@ -943,6 +953,11 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		if err := selected.Resume(); err != nil {
+			return m, m.handleError(err)
+		}
+		// Same reason as KeyCheckout: persist, or the resume is invisible to
+		// every reader outside this process until the interface quits.
+		if err := m.storage.SyncInstances(m.list.GetInstances()); err != nil {
 			return m, m.handleError(err)
 		}
 		return m, tea.WindowSize()

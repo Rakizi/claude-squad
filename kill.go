@@ -13,7 +13,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var killYes bool
+var (
+	killYes   bool
+	killForce bool
+)
 
 // killInstance removes one session the way the interface's D key does.
 //
@@ -33,7 +36,10 @@ var killYes bool
 // directory IS the worktree; removing it first leaves the session in a
 // directory that no longer exists, which is the state that produced a screenful
 // of "error capturing pane content" today.
-func killInstance(command *cobra.Command, title string) error {
+//
+// Returns the note to print after "removed": empty normally, the recorded
+// override when --force skipped a refusal.
+func killInstance(command *cobra.Command, title string, force bool) (string, error) {
 	// ⛔ WITHOUT THIS THE COMMAND PANICS. session code logs through log.ErrorLog,
 	// which is nil until Initialize runs -- and the interface initialises it
 	// while the CLI subcommands never did. MEASURED 2026-08-26: a nil-pointer
@@ -44,7 +50,7 @@ func killInstance(command *cobra.Command, title string) error {
 	state := config.LoadState()
 	storage, err := session.NewStorage(state)
 	if err != nil {
-		return couldNotLook("failed to open state: %v", err)
+		return "", couldNotLook("failed to open state: %v", err)
 	}
 
 	// ⚠ This restores every stored instance, because that is what LoadInstances
@@ -54,7 +60,7 @@ func killInstance(command *cobra.Command, title string) error {
 	// to get one. It is the same path the interface takes at startup.
 	instances, err := storage.LoadInstances()
 	if err != nil {
-		return couldNotLook("failed to load instances: %v", err)
+		return "", couldNotLook("failed to load instances: %v", err)
 	}
 
 	var target *session.Instance
@@ -68,12 +74,23 @@ func killInstance(command *cobra.Command, title string) error {
 	}
 	if target == nil {
 		if len(titles) == 0 {
-			return refused("no session named %q, and there are no sessions", title)
+			return "", refused("no session named %q, and there are no sessions", title)
 		}
-		return refused("no session named %q. Sessions: %v", title, titles)
+		return "", refused("no session named %q. Sessions: %v", title, titles)
 	}
 	// Read the worktree path BEFORE Kill removes it.
 	worktreePath := target.ToInstanceData().Worktree.WorktreePath
+
+	// ⛔ THE PRE-KILL PROOF, before anything is torn down. See prekill.go. A
+	// refusal here has removed NOTHING. --force does not skip the check; it
+	// skips the refusal and records what it stepped over.
+	var note string
+	if err := preKillProof(target, title, worktreePath); err != nil {
+		if !force {
+			return "", err
+		}
+		note = recordForcedKill(title, err)
+	}
 
 	// Tear down. If it fails, the entry is LEFT ALONE on purpose: an entry
 	// pointing at a half-removed worktree is recoverable, an orphaned worktree
@@ -90,12 +107,12 @@ func killInstance(command *cobra.Command, title string) error {
 	if err := target.Kill(); err != nil {
 		leftover, lookErr := stillPresent(title, worktreePath)
 		if lookErr != nil {
-			return couldNotLook(
+			return "", couldNotLook(
 				"tearing down %q failed (%v) and whether anything remains could NOT be\n"+
 					"determined (%v). NOTHING was removed from state.", title, err, lookErr)
 		}
 		if len(leftover) > 0 {
-			return refused("failed to tear down %q: %v\n  still present: %v", title, err, leftover)
+			return "", refused("failed to tear down %q: %v\n  still present: %v", title, err, leftover)
 		}
 		fmt.Fprintf(command.OutOrStdout(), "%s\talready torn down (%v)\n", title, err)
 	}
@@ -108,11 +125,11 @@ func killInstance(command *cobra.Command, title string) error {
 	// The entry is removed from RAW InstanceData instead, the way `ls` reads it:
 	// no Start, no restore, no second traversal of a tree that is mid-removal.
 	if err := removeStoredEntry(title); err != nil {
-		return fmt.Errorf(
+		return "", fmt.Errorf(
 			"%q was torn down but its state entry could NOT be removed: %w\n"+
 				"the entry now points at a worktree that no longer exists", title, err)
 	}
-	return nil
+	return note, nil
 }
 
 // stillPresent names what a teardown was supposed to remove and did not.
@@ -185,6 +202,23 @@ the same four things the interface's D key removes, by the same two calls.
 and a command that does the same thing silently on a typed title is more
 dangerous, not less. There is no undo: the branch goes with git branch -D.
 
+⛔ --yes means "do not ask me". It does not mean "do not check". Before the
+teardown, two measurements must come back clean or the kill is REFUSED with
+nothing removed:
+
+  · the branch's commits reachable from no remote and no tag
+    (git rev-list --not --remotes --tags, after refreshing the remote-tracking
+    ref) must be 0 -- a tag is as good a harbour as a push, and a count or a
+    refresh that could not run is a refusal, not a zero
+  · agent-trace <title> --json must not report LOCAL_ONLY_WORK (exit 2) or
+    CANNOT_TELL (exit 3); a tool that is missing, hangs or prints no JSON is
+    exit 3. Its other states (LANDED, UNFINISHED, DECISION_UNRELAYED) proceed.
+    Skipped, with the refs count standing alone, when the worktree is already
+    gone from disk (a paused session) -- there is nothing for it to read.
+
+--force steps over a refusal. It still runs the checks, and RECORDS what it
+stepped over: on stdout after "removed", on stderr, and in the log file.
+
 ⚠ A PAUSED session has no tmux session and no worktree by design, but it DOES
 still have its branch, and that branch is the only place its work exists.
 Killing it deletes that branch.
@@ -197,8 +231,10 @@ Exit codes:
 
   0  removed
   1  bad arguments
-  2  refused -- no such title, --yes not given, or the teardown failed
-  3  could not look -- state could not be read, so NOTHING was removed`,
+  2  refused -- no such title, --yes not given, the pre-kill proof found
+     local-only commits, or the teardown failed
+  3  could not look -- state could not be read, or the pre-kill proof could
+     not run. NOTHING was removed`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(command *cobra.Command, args []string) error {
 		title := args[0]
@@ -209,10 +245,15 @@ Exit codes:
 					"state entry. The branch goes with `git branch -D`. There is no undo.",
 				title)
 		}
-		if err := killInstance(command, title); err != nil {
+		note, err := killInstance(command, title, killForce)
+		if err != nil {
 			return err
 		}
-		fmt.Printf("%s\tremoved\n", title)
+		if note != "" {
+			fmt.Printf("%s\tremoved\t%s\n", title, note)
+		} else {
+			fmt.Printf("%s\tremoved\n", title)
+		}
 		return nil
 	},
 }

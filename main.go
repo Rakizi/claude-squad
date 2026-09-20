@@ -177,6 +177,8 @@ func init() {
 
 	killCmd.Flags().BoolVar(&killYes, "yes", false,
 		"Confirm removal. REQUIRED — this deletes the worktree and the branch.")
+	killCmd.Flags().BoolVar(&killForce, "force", false,
+		"Step over a pre-kill refusal (local-only commits, or a check that could not run). The override is recorded.")
 
 	rootCmd.AddCommand(newCmd)
 	rootCmd.AddCommand(killCmd)

@@ -26,9 +26,15 @@ harness exited 0. The flake this branch just fixed ran at ~9% per run and this
 harness mutates 7 files, so roughly HALF of all runs had at least one free RED.
 
 Exits follow the house contract: 0 every mutant died · 1 something SURVIVED ·
-3 COULD NOT LOOK (the baseline is red, or a mutant could not be applied). ⛔
-INVALID is a could-not-look, not a finding -- collapsing it into 1 is the same
-defect one more layer down.
+3 COULD NOT LOOK (the baseline is red or unvettable). ⛔ INVALID is a
+could-not-look, not a finding -- collapsing it into 1 is the same defect one
+more layer down.
+
+⚠ AND A SURVIVOR OUTRANKS AN INVALID. `max(rc, …)` made 3 win, so a run with one
+unappliable mutant AND one real survivor exited 3 -- telling a machine reading
+`$?` "could not look" while something had in fact survived. A finding is never
+masked by a blind spot; both are still non-zero, so neither is ever a false
+pass.
 """
 import pathlib
 import shutil
@@ -58,17 +64,20 @@ MUTANTS = [
     #: The hoist that shipped GREEN until round 5 -- moved above the Pause
     #: CALL, not above the proof. The refusal test stops at prePauseProof, so
     #: target.Pause() never runs and only a seam can reach this.
-    #: ⚠ A MOVE, NOT A DUPLICATE. Inserting a second call and leaving the first
-    #: models a build that closes the pane TWICE, which is not the defect. The
-    #: anchor spans from the real call to the Pause call so the replacement can
-    #: delete one and insert the other in a single edit.
+    #: ⚠ THREE SHAPES, AND THE COMMENT HERE USED TO DESCRIBE A FOURTH THAT DOES
+    #: NOT EXIST. It claimed the anchor "spans from the real call to the Pause
+    #: call so the replacement can delete one and insert the other in a single
+    #: edit". N4 deletes only. N4b inserts only and LEAVES the original, which
+    #: models a build that closes the pane twice. The TRUE move -- delete at the
+    #: real site AND insert before the Pause -- was in neither, so the defect
+    #: this pair is named for was covered only incidentally. N4c is that move.
     ("N4", "pause.go",
      "\tcloseTerminalSession(title)\n\n\t// \u26d4 Pause() only mutates",
      "\t// \u26d4 Pause() only mutates",
      "the pane is never closed on a successful pause (half of the move)"),
     ("N4b", "pause.go", "\tif err := pauseOp(target); err != nil {",
      "\tcloseTerminalSession(title)\n\tif err := pauseOp(target); err != nil {",
-     "a failed pause closes the pane it said it left alone"),
+     "the pane is closed TWICE -- once before Pause is attempted"),
 ]
 
 
@@ -76,9 +85,29 @@ def sh(*cmd, cwd):
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True).returncode
 
 
+def sh_out(*cmd, cwd):
+    """(returncode, stdout+stderr) -- for the baseline, which must SAY what is red."""
+    p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    return p.returncode, (p.stdout or "") + (p.stderr or "")
+
+
+#: ⛔ THE ONE MUTANT A SINGLE before/after CANNOT EXPRESS. A move is two edits --
+#: delete the call at its real site AND insert it before the Pause. N4 does the
+#: first, N4b the second, and neither is the defect: the defect is a build that
+#: closes the pane EARLY, not one that never closes it or closes it twice.
+MOVES = [
+    ("N4c", "pause.go",
+     [("\tcloseTerminalSession(title)\n", ""),
+      ("\tif err := pauseOp(target); err != nil {",
+       "\tcloseTerminalSession(title)\n\tif err := pauseOp(target); err != nil {")],
+     "a failed pause closes the pane it said it left alone"),
+]
+
+
 def main(argv):
     want = set(argv[1:])
     rc = 0
+    blind = False
 
     #: ⛔ THE BASELINE, BEFORE ANY MUTATION. A red tree makes every mutant look
     #: killed, for free.
@@ -88,9 +117,25 @@ def main(argv):
         if sh("go", "build", "./...", cwd=base) != 0:
             print("  COULD NOT LOOK  the unmutated tree does not BUILD")
             return 3
-        if sh("go", "test", "./...", "-count=1", cwd=base) != 0:
+        #: ⛔ VET TOO, BECAUSE THE MUTANT LOOP DOES. `go test` runs only a
+        #: SUBSET of vet, so a lostcancel-class error builds clean, tests clean,
+        #: and then fails every mutant as "does not vet" -- each one blamed for a
+        #: condition that pre-exists in the unmutated tree. Measured: exit stayed
+        #: 3 so nothing was ever certified, but the diagnosis named the wrong
+        #: thing, which is this file's own defect one notch milder.
+        if sh("go", "vet", "./...", cwd=base) != 0:
+            print("  COULD NOT LOOK  the unmutated tree does not VET -- every "
+                  "mutant below would be blamed for it. Fix the tree first.")
+            return 3
+        rc_test, why = sh_out("go", "test", "./...", "-count=1", cwd=base)
+        if rc_test != 0:
             print("  COULD NOT LOOK  the unmutated tree is not green -- every RED "
                   "below would be free. Fix the suite first.")
+            #: Name it. A refusal that does not say WHICH test is red costs the
+            #: reader the same run again with -v.
+            for line in why.splitlines():
+                if line.startswith("--- FAIL") or line.startswith("FAIL"):
+                    print("                  " + line.strip())
             return 3
     print("  baseline: build and go test ./... GREEN before the first mutation")
     for name, rel, before, after, reinstates in MUTANTS:
@@ -104,30 +149,61 @@ def main(argv):
             if src.count(before) != 1:
                 print("  INVALID   %-5s anchor appears %d times, not once"
                       % (name, src.count(before)))
-                rc = max(rc, 3)
+                blind = True
                 continue
             mutated = src.replace(before, after, 1)
             if mutated == src:
                 #: before == after changes nothing, so a RED would be the
                 #: baseline's, not the mutant's.
                 print("  INVALID   %-5s mutates ZERO BYTES" % name)
-                rc = max(rc, 3)
+                blind = True
                 continue
             f.write_text(mutated)
             if sh("go", "build", "./...", cwd=tree) != 0:
                 print("  INVALID   %-5s does not compile -- proves an unused "
                       "identifier, not a behavioural guard" % name)
-                rc = max(rc, 3)
+                blind = True
                 continue
             if sh("go", "vet", "./...", cwd=tree) != 0:
                 print("  INVALID   %-5s does not vet" % name)
-                rc = max(rc, 3)
+                blind = True
                 continue
             red = sh("go", "test", "./...", "-count=1", cwd=tree) != 0
             print("  %-9s %-5s %s" % ("RED" if red else "SURVIVED", name, reinstates))
             if not red:
-                rc = max(rc, 1)
-    return rc
+                rc = 1
+    for name, rel, edits, reinstates in MOVES:
+        if want and name not in want:
+            continue
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = pathlib.Path(tmp) / "t"
+            shutil.copytree(ROOT, tree, ignore=shutil.ignore_patterns(".git"))
+            f = tree / rel
+            src = f.read_text()
+            mutated = src
+            bad = None
+            for before, after in edits:
+                if mutated.count(before) != 1:
+                    bad = "anchor appears %d times, not once" % mutated.count(before)
+                    break
+                mutated = mutated.replace(before, after, 1)
+            if bad or mutated == src:
+                print("  INVALID   %-5s %s" % (name, bad or "mutates ZERO BYTES"))
+                blind = True
+                continue
+            f.write_text(mutated)
+            if sh("go", "build", "./...", cwd=tree) != 0 or sh("go", "vet", "./...", cwd=tree) != 0:
+                print("  INVALID   %-5s does not compile or vet" % name)
+                blind = True
+                continue
+            red = sh("go", "test", "./...", "-count=1", cwd=tree) != 0
+            print("  %-9s %-5s %s" % ("RED" if red else "SURVIVED", name, reinstates))
+            if not red:
+                rc = 1
+
+    #: A SURVIVOR is a finding and outranks a blind spot; 3 only when nothing
+    #: survived but something could not be looked at.
+    return rc if rc else (3 if blind else 0)
 
 
 if __name__ == "__main__":

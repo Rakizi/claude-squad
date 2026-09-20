@@ -284,7 +284,34 @@ func TestPauseClosesTheTerminalSession(t *testing.T) {
 	})
 
 	closed := recordTerminalOps(t, tmux.SessionName("term_"+title))
-	_ = pauseInstance(title)
+	require.NoError(t, pauseInstance(title))
 	require.Equal(t, []string{"term_" + title}, *closed,
 		"pause removes the worktree, so a surviving term_ session sits in a directory that is gone")
+}
+
+// ⛔ AND A REFUSED PAUSE MUST LEAVE THE PANE ALONE. kill.go has this test;
+// pause.go did not, so the exact defect kill.go's own comment documents --
+// "an earlier revision put the call before the teardown, where a refusal had
+// already closed a pane the caller was told was untouched" -- could be
+// reintroduced in pause.go and ship green. Two hoists were found that way.
+func TestPauseDoesNotTouchTheTerminalOnARefusal(t *testing.T) {
+	initTestLog(t)
+	repo, _ := killRepo(t)
+	title := fmt.Sprintf("cs6-pause-refuse-%d", os.Getpid())
+	gone := filepath.Join(t.TempDir(), "worktree-that-was-removed")
+	// A branch that does not exist: prePauseProof refuses before Pause() runs.
+	stored := storeEntries(t, session.InstanceData{
+		Title: title, Status: session.Running, Program: "true", Branch: "no-such-branch",
+		Worktree: session.GitWorktreeData{RepoPath: repo, WorktreePath: gone,
+			BranchName: "no-such-branch", SessionName: title},
+	})
+
+	closed := recordTerminalOps(t, tmux.SessionName("term_"+title))
+	err := pauseInstance(title)
+	require.Error(t, err)
+	assert.Equal(t, exitRefused, exitCodeFor(err))
+	require.Empty(t, *closed,
+		"the pause was REFUSED, so the caller was told nothing changed -- "+
+			"closing their terminal pane makes that statement false")
+	assert.Equal(t, session.Running, stored()[0].Status, "a refusal persists nothing")
 }

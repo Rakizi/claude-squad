@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -561,7 +562,18 @@ func TestCheckoutAndResumePersistWithoutQuitting(t *testing.T) {
 	// not panic: the previous shape required a wiring line in newHome, and
 	// deleting it compiled, kept the suite green and killed the interface on
 	// the first keypress.
-	t.Run("an unseamed home falls back to the real write", func(t *testing.T) {
+	// ⛔ IT MUST PROVE THE FALLBACK REACHES STORAGE. An earlier version asserted
+	// only require.NoError, which `return nil` satisfies — so gutting the
+	// fallback body shipped GREEN while the `c` and `r` keypresses silently lost
+	// their write. That is this PR's own defect #2, reinstated, passing a test
+	// named for preventing it.
+	//
+	// ⚠ Reading the state back does NOT work as the assertion: SyncInstances
+	// skips instances that were never Started, and preserves stored entries it
+	// did not hold, so the file is byte-identical whether the call reached
+	// storage or not. Corrupt stored JSON is the shape that cannot be faked —
+	// only a call that really unmarshals it can fail.
+	t.Run("an unseamed home really reaches storage, not merely returns nil", func(t *testing.T) {
 		t.Setenv(config.ConfigDirEnvVar, t.TempDir())
 		st := config.LoadState()
 		storage, err := session.NewStorage(st)
@@ -569,6 +581,35 @@ func TestCheckoutAndResumePersistWithoutQuitting(t *testing.T) {
 		sp := spinner.New(spinner.WithSpinner(spinner.MiniDot))
 		h := &home{ctx: context.Background(), storage: storage,
 			list: ui.NewList(&sp, false), appState: st}
-		require.NoError(t, h.saveInstances(), "the fallback must work with no hook set")
+
+		// ⭐ CONTROL FIRST: with readable state the fallback succeeds, so the
+		// error below is the corruption and not a broken fixture.
+		require.NoError(t, h.saveInstances())
+
+		// Written straight to disk: SaveInstances validates its own input, so
+		// the corruption has to arrive the way a truncated write or a hand-edit
+		// would. SyncInstances calls config.LoadState() itself, so it re-reads.
+		dir := os.Getenv(config.ConfigDirEnvVar)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "state.json"),
+			[]byte(`{"help_screens_seen":0,"instances":{"not":"an array"}}`), 0o644))
+		require.Error(t, h.saveInstances(),
+			"the fallback returned nil without reading state — it never reached storage")
+	})
+
+	// ⛔ A FAILED WRITE MUST BE SURFACED. Both handlers checked the error and
+	// nothing tested that they do, so `_ = m.saveInstances()` shipped green --
+	// and KeyCheckout already swallows a failed Pause(), which would make a
+	// checkout whose state write failed indistinguishable from one that worked.
+	t.Run("a failed write reaches the error box, on both handlers", func(t *testing.T) {
+		for _, key := range []rune{'c', 'r'} {
+			t.Setenv(config.ConfigDirEnvVar, t.TempDir())
+			saved := 0
+			h := newHomeWithOneInstance(t, &saved)
+			h.saveHook = func() error { return errors.New("state is unwritable") }
+			h.resumeOp = func(*session.Instance) error { return nil }
+			press(h, key)
+			require.Contains(t, h.errBox.String(), "state is unwritable",
+				"key %q swallowed a failed state write", string(key))
+		}
 	})
 }

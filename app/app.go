@@ -1037,24 +1037,6 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 
 // instanceChanged updates the preview pane, menu, and diff pane based on the selected instance. It returns an error
 // Cmd if there was any error.
-// saveInstances writes the instance list to state, honouring saveHook when a
-// test has set one. ⛔ The fallback is the point: no wiring line to forget.
-func (m *home) saveInstances() error {
-	if m.saveHook != nil {
-		return m.saveHook()
-	}
-	return m.storage.SyncInstances(m.list.GetInstances())
-}
-
-// resumeInstance resumes one instance, honouring resumeOp when a test has set
-// one. Same contract as saveInstances: the zero value does the real thing.
-func (m *home) resumeInstance(i *session.Instance) error {
-	if m.resumeOp != nil {
-		return m.resumeOp(i)
-	}
-	return i.Resume()
-}
-
 func (m *home) instanceChanged() tea.Cmd {
 	// selected may be nil
 	selected := m.list.GetSelectedInstance()
@@ -1072,6 +1054,24 @@ func (m *home) instanceChanged() tea.Cmd {
 		return m.handleError(err)
 	}
 	return nil
+}
+
+// saveInstances writes the instance list to state, honouring saveHook when a
+// test has set one. ⛔ The fallback is the point: no wiring line to forget.
+func (m *home) saveInstances() error {
+	if m.saveHook != nil {
+		return m.saveHook()
+	}
+	return m.storage.SyncInstances(m.list.GetInstances())
+}
+
+// resumeInstance resumes one instance, honouring resumeOp when a test has set
+// one. Same contract as saveInstances: the zero value does the real thing.
+func (m *home) resumeInstance(i *session.Instance) error {
+	if m.resumeOp != nil {
+		return m.resumeOp(i)
+	}
+	return i.Resume()
 }
 
 type keyupMsg struct{}

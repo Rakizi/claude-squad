@@ -461,6 +461,46 @@ func (i *Instance) TmuxAlive() bool {
 }
 
 // Pause stops the tmux session and removes the worktree, preserving the branch
+// markPausedIfResumable sets Paused only when the branch a Resume would rebuild
+// from still exists, and Unknown otherwise.
+//
+// ⛔ PAUSED MEANS RESUMABLE, AND NOTHING PROVED IT. Pause removes the worktree;
+// the BRANCH is the only thing Resume can rebuild from. Marking an instance
+// Paused -- a state whose whole contract is "torn down on purpose, resumable"
+// -- with no branch claims recoverability over work that cannot be recovered.
+// The same substitution Unknown exists to prevent one state over,
+// Rakizi/the-lab#30.
+//
+// ⭐ A CHECK THAT COULD NOT RUN IS NOT A PASS. `BranchExists` returning an error
+// means git could not answer; an unanswerable question about recoverability is
+// Unknown, never Paused on the benefit of the doubt.
+//
+// ⚠ IT IS A HELPER BECAUSE PAUSE HAS TWO EXITS. Guarding only the normal one
+// leaves the ORPHANED-worktree path -- which also sets Paused, and is reached
+// exactly when the worktree is already gone -- returning before the check. A
+// test written against real git caught that; reading the function did not.
+func (i *Instance) markPausedIfResumable(errs *[]error) error {
+	exists, err := i.gitWorktree.BranchExists()
+	if err != nil {
+		*errs = append(*errs, fmt.Errorf(
+			"could not verify branch %q still exists, so this is NOT provably "+
+				"resumable: %w", i.gitWorktree.GetBranchName(), err))
+		log.ErrorLog.Print(err)
+		i.SetStatus(Unknown)
+		return i.combineErrors(*errs)
+	}
+	if !exists {
+		*errs = append(*errs, fmt.Errorf(
+			"branch %q does not exist after teardown -- Resume would have "+
+				"nothing to rebuild from, so this is Unknown, not Paused",
+			i.gitWorktree.GetBranchName()))
+		i.SetStatus(Unknown)
+		return i.combineErrors(*errs)
+	}
+	i.SetStatus(Paused)
+	return nil
+}
+
 func (i *Instance) Pause() error {
 	if !i.started {
 		return fmt.Errorf("cannot pause instance that has not been started")
@@ -493,7 +533,9 @@ func (i *Instance) Pause() error {
 			errs = append(errs, fmt.Errorf("failed to prune git worktrees: %w", err))
 			log.ErrorLog.Print(err)
 		}
-		i.SetStatus(Paused)
+		if err := i.markPausedIfResumable(&errs); err != nil {
+			return err
+		}
 		_ = clipboard.WriteAll(i.gitWorktree.GetBranchName())
 		return i.combineErrors(errs)
 	}
@@ -537,7 +579,9 @@ func (i *Instance) Pause() error {
 		}
 	}
 
-	i.SetStatus(Paused)
+	if err := i.markPausedIfResumable(&errs); err != nil {
+		return err
+	}
 	_ = clipboard.WriteAll(i.gitWorktree.GetBranchName())
 
 	if err := i.combineErrors(errs); err != nil {
@@ -606,6 +650,34 @@ func (i *Instance) Resume() error {
 			}
 			return fmt.Errorf("failed to start new session: %w", err)
 		}
+	}
+
+	// ⛔ VERIFY AT THE DESTINATION. Every step above reports its own failure,
+	// and a resume that HALF worked passes all of them: `tmux.Start` can
+	// return nil for a session that is not answering, and the worktree can be
+	// re-added without the branch landing on it. Setting Running here was an
+	// assertion about an outcome nobody measured -- the same shape as the
+	// Stop hook reaping on a worker's own prose (Rakizi/the-lab#30).
+	//
+	// ⭐ A HALF-WORKED RESUME IS Unknown, NOT Running. Unknown is recoverable:
+	// Resume accepts it, so the user can simply try again, and `cs ls` stops
+	// claiming a session is live when it is not.
+	if !i.tmuxSession.DoesSessionExist() {
+		i.SetStatus(Unknown)
+		return fmt.Errorf(
+			"resume did not complete: the tmux session for %q is not answering "+
+				"after start. Left as Unknown (resumable), not Running", i.Title)
+	}
+	if valid, err := i.gitWorktree.IsValidWorktree(); err != nil {
+		i.SetStatus(Unknown)
+		return fmt.Errorf(
+			"resume could not verify the worktree for %q, so it is NOT provably "+
+				"running: %w", i.Title, err)
+	} else if !valid {
+		i.SetStatus(Unknown)
+		return fmt.Errorf(
+			"resume did not complete: the worktree for %q is missing or invalid "+
+				"after setup. Left as Unknown (resumable), not Running", i.Title)
 	}
 
 	i.SetStatus(Running)

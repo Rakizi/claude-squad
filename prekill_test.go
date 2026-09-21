@@ -3,6 +3,7 @@ package main
 import (
 	"claude-squad/log"
 	"claude-squad/session"
+	"claude-squad/session/git"
 	"errors"
 	"os"
 	"os/exec"
@@ -107,6 +108,64 @@ func TestJudgeLocalOnly(t *testing.T) {
 	err = judgeLocalOnly(0, errors.New("not a git repository"))
 	require.Error(t, err, "a count that could not run MUST refuse, even though n is 0")
 	assert.Equal(t, exitCouldNotLook, exitCodeFor(err))
+}
+
+// TestFreshLocalOnlyGoneBranch covers the reap path against a REAL repository,
+// because the defect lived in what git does to an absent ref rather than in
+// any decision a fake could model.
+//
+// ⛔ MEASURED 2026-09-21: 11 of 25 failed reaps were "ambiguous argument
+// 'refs/heads/rakizi/w-nag-XXXX'" -- `rev-list` on a branch that was already
+// deleted. That surfaced as could-not-look and `cs kill` refused, so the slots
+// could never be freed, while the work sat safely on origin the whole time. A
+// branch that is gone cannot be holding unpushed work, so it is the SAFEST
+// case, not an unreadable one.
+func TestFreshLocalOnlyGoneBranch(t *testing.T) {
+	repo := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-q", "-b", "main", ".")
+	run("commit", "-q", "--allow-empty", "-m", "base")
+
+	t.Run("a branch that exists and is unpushed still REFUSES -- the control", func(t *testing.T) {
+		// ⛔ MUST-HIT. Without this, a fix that always returned (0, nil) would
+		// pass the gone-branch case below and silently disarm the whole check.
+		run("branch", "held")
+		run("commit", "-q", "--allow-empty", "-m", "only-here")
+		run("branch", "-f", "held", "HEAD")
+		wt := git.NewGitWorktreeFromStorage(repo, "", "s-held", "held", "", false)
+		n, err := freshLocalOnly(wt)
+		require.NoError(t, err, "an existing branch must be countable")
+		require.Greater(t, n, 0, "an unpushed commit must still be counted")
+		require.Error(t, judgeLocalOnly(n, err), "and must still refuse the kill")
+	})
+
+	t.Run("a branch that is GONE counts 0 and proceeds", func(t *testing.T) {
+		wt := git.NewGitWorktreeFromStorage(repo, "", "s-gone", "rakizi/w-nag-9999", "", false)
+		n, err := freshLocalOnly(wt)
+		require.NoError(t, err,
+			"a deleted branch is not unreadable -- it is the safest case; "+
+				"before the fix this was `ambiguous argument` and blocked the reap")
+		assert.Equal(t, 0, n)
+		assert.NoError(t, judgeLocalOnly(n, err), "and the kill proceeds")
+	})
+
+	t.Run("an unreadable repository is STILL could-not-look", func(t *testing.T) {
+		// ⛔ The fix must not soften a genuine failure into "nothing to lose".
+		wt := git.NewGitWorktreeFromStorage(filepath.Join(t.TempDir(), "nope"), "", "s-broken", "any", "", false)
+		n, err := freshLocalOnly(wt)
+		require.Error(t, err, "an unreadable repo must refuse, not count 0")
+		assert.Equal(t, exitCouldNotLook, exitCodeFor(judgeLocalOnly(n, err)))
+	})
 }
 
 func TestRunAgentTrace(t *testing.T) {

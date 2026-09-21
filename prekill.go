@@ -186,7 +186,39 @@ func judgeLocalOnly(n int, countErr error) error {
 // counts. A refresh that fails is returned as the count's error, so the
 // caller's could-not-look path fires: the cached view may hide a push OR a
 // remote-side delete, and neither direction is safe to guess.
+//
+// ⛔ THE BRANCH IS PROVEN TO EXIST FIRST, AND A GONE BRANCH IS NOT AN ERROR.
+// `CommitsOnNoRemoteOrTag` runs `rev-list refs/heads/<b>`, which on an absent
+// ref exits 128 ("ambiguous argument") -- correctly NOT rendered as 0 by that
+// function, so it surfaced here as could-not-look and `cs kill` refused. But a
+// branch that is not there cannot be holding unpushed work: `git branch -D`
+// has nothing left to make unreachable, which is the only question this check
+// asks. Refusing was guarding nothing and cost the reap path instead.
+//
+// MEASURED 2026-09-21: 11 of 25 failed reaps were exactly this -- "ambiguous
+// argument 'refs/heads/rakizi/w-nag-XXXX'" on sessions whose worktree AND
+// branch were already gone, with the work safely on origin (spot-checked
+// w-nag-1127, w-nag-1155, w-nag-1121: local branch absent,
+// refs/remotes/origin/<b> present). Those slots could not be freed at all, and
+// dispatch reported "36/16 workers live -- no free slot".
+//
+// ⭐ THE SHAPE IS ALREADY SOLVED NEXT DOOR: prePauseProof asks BranchExists
+// before counting, because a pause needs the branch to survive. A kill needs
+// the opposite -- a gone branch is the safest case there is -- so the same
+// probe is read to the opposite conclusion here, and an ERROR from it stays a
+// refusal in both.
 func freshLocalOnly(wt *git.GitWorktree) (int, error) {
+	exists, err := wt.BranchExists()
+	if err != nil {
+		// ⛔ NOT an absence. A probe that could not answer is a refusal, per
+		// BranchExists' own three-outcome contract (Rakizi/the-lab#30).
+		return 0, fmt.Errorf("could not check whether branch %s still exists: %w",
+			wt.GetBranchName(), err)
+	}
+	if !exists {
+		// Nothing to lose: no ref, so `git branch -D` unreachables nothing.
+		return 0, nil
+	}
 	if err := wt.RefreshRemoteBranch(); err != nil {
 		return 0, err
 	}

@@ -140,3 +140,64 @@ func gitq(t *testing.T, dir string, args ...string) {
 		t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
 	}
 }
+
+// ⛔ PAUSED MEANS RESUMABLE, AND NOTHING PROVED IT. Pause tears the worktree
+// down; the BRANCH is the only thing a Resume can rebuild from. If it is gone,
+// marking the instance Paused -- a state whose whole contract is "torn down on
+// purpose, resumable" -- claims recoverability over work that cannot be
+// recovered. Rakizi/the-lab#30.
+//
+// ⭐ DRIVEN AGAINST REAL GIT, not a stub: the question is what `git
+// show-ref`/`rev-parse` actually says, and a fake that returns the expected
+// answer would pass while the real command was wrong.
+func pausableInstance(t *testing.T, branch string) *Instance {
+	t.Helper()
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	require.NoError(t, os.MkdirAll(repo, 0o755))
+	gitq(t, repo, "init", "-q")
+	gitq(t, repo, "config", "user.email", "t@t")
+	gitq(t, repo, "config", "user.name", "t")
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "f.txt"), []byte("a"), 0o644))
+	gitq(t, repo, "add", "f.txt")
+	gitq(t, repo, "commit", "-q", "-m", "base")
+	gitq(t, repo, "branch", branch)
+	worktree := filepath.Join(root, "wt")
+	gitq(t, repo, "worktree", "add", "-q", worktree, branch)
+
+	inst, err := FromInstanceData(InstanceData{
+		Title: "parked", Status: Running, Program: "claude", Branch: branch,
+		Worktree: GitWorktreeData{RepoPath: repo, WorktreePath: worktree,
+			BranchName: branch, SessionName: "parked"},
+	})
+	require.NoError(t, err)
+	inst.SetTmuxSession(tmux.NewTmuxSessionWithDeps("parked", "claude", &nullPtyFactory{t: t},
+		cmd_test.MockCmdExec{RunFunc: func(*exec.Cmd) error { return nil }}))
+	return inst
+}
+
+func TestPauseIsUnknownWhenTheBranchIsGone(t *testing.T) {
+	inst := pausableInstance(t, "feat")
+	// remove the worktree first so git will let the branch go, then delete it:
+	// exactly the state a pause would be entering if the branch had vanished
+	gitq(t, inst.gitWorktree.GetRepoPath(), "worktree", "remove", "--force",
+		inst.gitWorktree.GetWorktreePath())
+	gitq(t, inst.gitWorktree.GetRepoPath(), "branch", "-D", "feat")
+
+	err := inst.Pause()
+	require.Error(t, err, "a pause that cannot be resumed is not a success")
+	require.Equal(t, Unknown, inst.Status)
+	// ⛔ THE DISCRIMINATION, in the direction that matters: Paused would tell
+	// the operator, and `cs ls`, that this comes back. It does not.
+	require.NotEqual(t, Paused, inst.Status,
+		"a torn-down instance whose branch is gone must not read as resumable")
+}
+
+// ⭐ THE CONTROL. Without it the test above passes for a Pause that can never
+// reach Paused at all -- a blanket refusal wearing the shape of a safety check.
+func TestPauseStillReachesPausedWhenTheBranchSurvives(t *testing.T) {
+	inst := pausableInstance(t, "feat")
+	require.NoError(t, inst.Pause())
+	require.Equal(t, Paused, inst.Status)
+	require.False(t, inst.Unknown())
+}

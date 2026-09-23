@@ -24,15 +24,73 @@ func (g *GitWorktree) Setup() error {
 	// If this worktree uses a pre-existing branch, always set up from that branch
 	// (it may exist locally or only on the remote).
 	if g.isExistingBranch {
-		return g.setupFromExistingBranch()
+		if err := g.setupFromExistingBranch(); err != nil {
+			return err
+		}
+		return g.provision()
 	}
 
 	// Check if branch exists using git CLI (much faster than go-git PlainOpen)
 	_, err = g.runGitCommand(g.repoPath, "show-ref", "--verify", fmt.Sprintf("refs/heads/%s", g.branchName))
 	if err == nil {
-		return g.setupFromExistingBranch()
+		if err := g.setupFromExistingBranch(); err != nil {
+			return err
+		}
+		return g.provision()
 	}
-	return g.setupNewWorktree()
+	if err := g.setupNewWorktree(); err != nil {
+		return err
+	}
+	return g.provision()
+}
+
+// provision makes the new worktree able to run the repo's code BY ITSELF.
+//
+// ⛔ THE DEFECT THIS CLOSES, MEASURED 2026-09-23. Isolation was a CONVENTION, not a
+// mechanism. A worker was *told* to work in its worktree; nothing *made* it, and a
+// fresh worktree structurally could not do the job -- no .venv, so not one test
+// could run. The only working toolchain on the box lived in the SHARED checkout,
+// so "do the job" and "stay isolated" were in direct contradiction, and the goal
+// wins that fight every time because the goal is what an agent is graded on.
+//
+// A pr-audit child hit exactly that: its sandbox venv build was blocked, so it fell
+// back to the shared checkout and ran `git stash` + `git checkout <pr-head>` there,
+// yanking a tree five bots share onto a detached HEAD and stashing another agent's
+// uncommitted work. Nothing objected. This is the same class as the base-ref bug
+// documented in setupNewWorktree below: the shared checkout's transient state
+// silently becoming everyone's problem.
+//
+// ⚠ THE STASH IS ONE GLOBAL STACK PER REPO, NOT PER-WORKTREE -- .git/refs/stash is
+// shared by every worktree, so `git stash pop` pops whatever is on top, not
+// necessarily your own. Two agents stashing concurrently is silent loss.
+//
+// ⭐ NEVER FATAL. A repo with no Python manifest is the normal case, not a failure,
+// and a provisioning problem must not cost a session its worktree -- the work is
+// already safely created by the time we get here. The provisioner reports refused(2)
+// / could-not-look(3) on its own; we log and continue.
+func (g *GitWorktree) provision() error {
+	script := os.ExpandEnv("$HOME/the-lab/ops/bin/worktree-provision")
+	if _, err := os.Stat(script); err != nil {
+		return nil // provisioner absent: not this estate, nothing to do
+	}
+	cmd := exec.Command(script, g.worktreePath)
+	out, err := cmd.CombinedOutput()
+	// ⛔ log.InfoLog/WarningLog are nil until log.Initialize(), which only the real
+	// app calls at startup. An unguarded Printf here is a nil-pointer panic for every
+	// non-app caller -- the same live landmine already documented in
+	// TestCleanupWorktrees_MultiRepoIsolation. Guard rather than drop the logging:
+	// a provisioning failure that nothing reports is how this whole class of bug hides.
+	if err != nil {
+		if log.WarningLog != nil {
+			log.WarningLog.Printf("worktree-provision did not complete for %s: %v\n%s",
+				g.worktreePath, err, strings.TrimSpace(string(out)))
+		}
+		return nil
+	}
+	if log.InfoLog != nil {
+		log.InfoLog.Printf("provisioned worktree %s:\n%s", g.worktreePath, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // setupFromExistingBranch creates a worktree from an existing branch
